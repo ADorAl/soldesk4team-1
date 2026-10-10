@@ -1,0 +1,59 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.1'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.teamplace'
+version = '0.0.1-SNAPSHOT'
+
+java {
+    // 기존 Maven 프로젝트의 Java 17 설정을 그대로 유지한다.
+    // 현재 PC의 Java 환경도 17이므로 기존 Java 소스코드는 수정하지 않는다.
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    // 기존 Maven 프로젝트와 마찬가지로
+    // Spring Boot 및 기타 라이브러리를 Maven Central에서 가져온다.
+    mavenCentral()
+}
+
+dependencies {
+    // Spring Data JPA
+    // Entity와 Repository를 이용해 Oracle DB에 접근하기 위해 사용한다.
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+
+    // 현재 pom.xml에 존재하는 의존성이다.
+    // TeamPlace는 앞으로 React + REST API 구조로 개발하지만,
+    // 이번 작업에서는 Maven → Gradle 전환만 하므로 임의로 제거하지 않는다.
+    implementation 'org.springframework.boot:spring-boot-starter-thymeleaf'
+
+    // REST Controller 및 Spring MVC 기능
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+
+    // Oracle JDBC Driver
+    // 애플리케이션 실행 시 Oracle DB에 접속하는 데 필요하다.
+    runtimeOnly 'com.oracle.database.jdbc:ojdbc17'
+
+    // Lombok
+    // @Getter, @Setter 등의 Lombok 코드를 컴파일할 때 사용한다.
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // 테스트 코드에서도 Lombok을 사용할 수 있도록 한다.
+    testCompileOnly 'org.projectlombok:lombok'
+    testAnnotationProcessor 'org.projectlombok:lombok'
+
+    // 아래 세 개는 현재 pom.xml의 테스트 의존성을 그대로 옮긴 것이다.
+    testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-thymeleaf-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+}
+
+tasks.named('test') {
+    // Spring Boot 테스트가 JUnit Platform에서 실행되도록 한다.
+    useJUnitPlatform()
+}

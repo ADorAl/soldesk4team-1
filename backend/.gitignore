@@ -1,0 +1,51 @@
+# =========================================================
+# TeamPlace - Git Ignore
+# =========================================================
+
+# 개인 DB 설정
+application-local.properties
+application-local.yml
+application-local.yaml
+
+# 환경변수 및 비밀 설정
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# 민감정보 및 인증서
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Gradle
+.gradle/
+**/build/
+
+# Maven
+**/target/
+
+# React / Node.js
+node_modules/
+**/dist/
+**/coverage/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.class
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 로그
+*.log
+
+# 임시 파일
+*.tmp
+*.bak
