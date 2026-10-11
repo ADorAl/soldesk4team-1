@@ -1,0 +1,820 @@
+
+/*
+ * ============================================================
+ * 파일명: projectApi.js
+ * 위치: src/services/projectApi.js
+ * ============================================================
+ *
+ * [파일 목적]
+ * TeamPlace의 PROJECT 관련 Spring Boot API 요청을 관리한다.
+ *
+ * [현재 구현 기능]
+ * 1. getMyProjects() : 프로젝트 목록 조회
+ * 2. createProject() : 프로젝트 생성
+ *
+ * [관련 백엔드]
+ * - ProjectController.java
+ * - ProjectCreateRequest.java
+ * - ProjectResponse.java
+ * - ProjectService.java
+ *
+ * [팀원 인계]
+ * - API 호출은 이 파일에서 관리한다.
+ * - 화면 구성과 Tailwind CSS는 pages 컴포넌트에서 관리한다.
+ * - 인증 기능이 통합되면 요청 인증 방식을 함께 변경한다.
+ * - Vite Proxy가 /api 요청을 Spring Boot로 전달한다.
+ *
+ * TODO:
+ * - 프로젝트 상세 조회
+ * - 프로젝트 수정
+ * - 프로젝트 삭제
+ *
+ * 주의:
+ * X-Dev-User-Id는 개발 테스트용이며 실제 인증이 아니다.
+ * ============================================================
+ */
+
+
+// PROJECT API의 공통 주소
+const PROJECT_API_URL = '/api/projects'
+
+
+// ------------------------------------------------------------
+// 1. 내 프로젝트 목록 조회
+// ------------------------------------------------------------
+
+/*
+ * GET /api/projects
+ *
+ * 현재 사용자가 ACTIVE 멤버로 참여 중인
+ * 프로젝트 목록을 조회한다.
+ *
+ * 반환값:
+ * ProjectResponse 객체들의 배열
+ */
+export async function getMyProjects() {
+
+    const response = await fetch(PROJECT_API_URL, {
+        method: 'GET',
+        headers: {
+            Accept: 'application/json',
+        },
+    })
+
+    /*
+     * response.ok
+     * HTTP 상태 코드가 200~299인지 확인한다.
+     */
+    if (!response.ok) {
+        throw new Error(
+            `프로젝트 목록 조회 실패 (HTTP ${response.status})`
+        )
+    }
+
+    // JSON 응답을 JavaScript 데이터로 변환
+    const projects = await response.json()
+
+    // 목록 API는 배열을 반환해야 한다.
+    if (!Array.isArray(projects)) {
+        throw new Error(
+            '프로젝트 목록 응답이 배열 형식이 아닙니다.'
+        )
+    }
+
+    return projects
+}
+
+
+// ------------------------------------------------------------
+// 2. 프로젝트 생성
+// ------------------------------------------------------------
+
+/*
+ * [함수명]
+ * createProject(projectData)
+ *
+ * [목적]
+ * React에서 입력한 프로젝트 정보를
+ * Spring Boot 서버에 전달하여 새 프로젝트를 생성한다.
+ *
+ * [HTTP 요청]
+ * POST /api/projects
+ *
+ * [요청 JSON]
+ * {
+ *   "projectName": "프로젝트 이름",
+ *   "description": "프로젝트 설명",
+ *   "crawlKeyword": "수집 키워드"
+ * }
+ *
+ * [프로젝트 생성 후 처리]
+ * 백엔드 ProjectService에서:
+ * - PROJECT 행 생성
+ * - 현재 사용자를 LEADER + ACTIVE로 등록
+ *
+ * [반환값]
+ * 생성된 프로젝트의 ProjectResponse 객체
+ *
+ * 주요 필드:
+ * projectId, projectName, ownerId, status 등
+ *
+ * [팀원 인계]
+ * 프로젝트 생성 페이지에서는 이 함수를 호출한다.
+ * 생성 성공 후 반환된 projectId를 이용해
+ * 프로젝트 상세 페이지로 이동할 예정이다.
+ *
+ * 현재 이 함수 자체는 페이지 이동을 하지 않는다.
+ * API 요청과 화면 이동의 책임을 분리하기 위함이다.
+ */
+export async function createProject(projectData) {
+
+    /*
+     * [프론트엔드 기본 검증]
+     *
+     * 프로젝트 이름에서 양쪽 공백을 제거한다.
+     * 이름을 입력하지 않았다면 서버 요청을 보내지 않는다.
+     *
+     * 백엔드에서도 동일한 유효성 검증이 필요하며,
+     * 프론트엔드 검증만으로 데이터를 보호할 수는 없다.
+     */
+    const projectName = projectData.projectName?.trim()
+
+    if (!projectName) {
+        throw new Error('프로젝트명을 입력해 주세요.')
+    }
+
+    /*
+     * [요청 데이터]
+     *
+     * DTO에서 지원하는 세 필드만 전달한다.
+     *
+     * projectId, ownerId, status를 전달하지 않는다.
+     * 이 값은 백엔드가 결정한다.
+     *
+     * 선택 입력값이 비어 있으면 null을 전달한다.
+     */
+    const requestBody = {
+        projectName,
+        description: projectData.description?.trim() || null,
+        crawlKeyword: projectData.crawlKeyword?.trim() || null,
+    }
+
+    /*
+     * [HTTP POST 요청]
+     *
+     * method: 'POST'
+     * → 새로운 리소스를 생성하는 요청
+     *
+     * Content-Type: application/json
+     * → 요청 본문이 JSON임을 서버에 알린다.
+     *
+     * JSON.stringify()
+     * → JavaScript 객체를 JSON 문자열로 변환한다.
+     */
+    const response = await fetch(PROJECT_API_URL, {
+        method: 'POST',
+
+        headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+        },
+
+        body: JSON.stringify(requestBody),
+    })
+
+    /*
+     * [오류 처리]
+     *
+     * 요청 실패 시 Error를 발생시킨다.
+     * 생성 페이지에서 catch로 받아 메시지를 표시한다.
+     *
+     * 실패했다고 무조건 재요청하면 안 된다.
+     * 네트워크 오류에서는 서버에 생성되었지만
+     * 응답만 받지 못했을 가능성도 있기 때문이다.
+     */
+    if (!response.ok) {
+        throw new Error(
+            `프로젝트 생성 실패 (HTTP ${response.status})`
+        )
+    }
+
+    /*
+     * [생성 성공]
+     *
+     * 백엔드에서 반환된 ProjectResponse를 읽는다.
+     *
+     * 반환된 projectId는 이후 상세 페이지 이동에 사용한다.
+     */
+    const createdProject = await response.json()
+
+    /*
+     * 정상 생성 응답에는 projectId가 있어야 한다.
+     *
+     * 단, 이 검사는 응답 구조 확인용이다.
+     * 서버에 실제 저장되었는지 여부를 결정하는 검사가 아니다.
+     */
+    if (createdProject?.projectId == null) {
+        throw new Error(
+            '프로젝트 생성 응답에 projectId가 없습니다. 목록을 확인해 주세요.'
+        )
+    }
+
+    return createdProject
+}
+
+
+/*
+ * ============================================================
+ * 3. 프로젝트 상세 조회
+ * ============================================================
+ *
+ * [함수명]
+ * getProjectDetail(projectId)
+ *
+ * [목적]
+ * 사용자가 선택한 프로젝트의 상세 정보를
+ * Spring Boot API를 통해 조회한다.
+ *
+ * [관련 백엔드]
+ * ProjectController.getProject()
+ * ProjectService.getProject()
+ * ProjectResponse
+ *
+ * [HTTP 요청]
+ * GET /api/projects/{projectId}
+ *
+ * 예:
+ * GET /api/projects/5
+ *
+ * [매개변수]
+ * projectId:
+ * - 조회할 프로젝트의 고유 ID
+ * - PROJECT 테이블의 PROJECT_ID에 해당
+ *
+ * [반환 데이터]
+ * ProjectResponse 객체
+ *
+ * 주요 필드:
+ * - projectId
+ * - projectName
+ * - description
+ * - ownerId
+ * - crawlKeyword
+ * - status
+ * - createdAt
+ * - updatedAt
+ *
+ * [권한 관련 주의]
+ * 프로젝트 상세 조회 권한은 백엔드 Service에서 검사한다.
+ *
+ * 프론트엔드에서 projectId를 알고 있더라도
+ * 해당 프로젝트의 접근 권한이 생기는 것은 아니다.
+ *
+ * [팀원 인계 / TODO]
+ * - ProjectDetailPage.jsx에서 이 함수를 호출한다.
+ * - 추후 React Router를 사용하면 URL의 projectId를
+ *   읽어서 이 함수에 전달한다.
+ * - 로그인 통합 시 projectApi.js의 인증 처리 방식을
+ *   팀원과 함께 수정한다.
+ *
+ * 이 함수는 API 호출만 담당하며
+ * 페이지 이동이나 Tailwind CSS는 담당하지 않는다.
+ * ============================================================
+ */
+export async function getProjectDetail(projectId) {
+
+    /*
+     * [프로젝트 ID 기본 검증]
+     *
+     * Number():
+     * 전달받은 값을 숫자로 변환한다.
+     *
+     * Number.isSafeInteger():
+     * JavaScript에서 안전하게 다룰 수 있는 정수인지 확인한다.
+     *
+     * 프로젝트 ID는 양의 정수여야 한다.
+     *
+     * 주의:
+     * 이 검사는 잘못된 요청을 줄이기 위한 것이며
+     * 실제 접근 권한은 백엔드에서 판단한다.
+     */
+    const id = Number(projectId)
+
+    if (!Number.isSafeInteger(id) || id <= 0) {
+        throw new Error('올바른 프로젝트 ID가 아닙니다.')
+    }
+
+    /*
+     * [HTTP GET 요청]
+     *
+     * PROJECT_API_URL = '/api/projects'
+     *
+     * `${PROJECT_API_URL}/${id}`
+     * → 예: /api/projects/5
+     *
+     * Vite Proxy가 해당 요청을
+     * Spring Boot 서버로 전달한다.
+     */
+    const response = await fetch(
+        `${PROJECT_API_URL}/${id}`,
+        {
+            method: 'GET',
+            headers: {
+                Accept: 'application/json',
+            },
+        }
+    )
+
+    /*
+     * [HTTP 오류 확인]
+     *
+     * 200: 상세 조회 성공
+     * 400: 잘못된 요청 등
+     * 403: 조회 권한 없음
+     * 404: 프로젝트 없음
+     * 500: 서버 오류
+     *
+     * 위 코드는 일반적인 HTTP 오류 예시이며
+     * 실제 상태 코드는 백엔드 예외 처리 정책에 따른다.
+     *
+     * fetch()는 4xx/5xx 응답만으로 예외가 발생하지
+     * 않으므로 response.ok를 직접 확인한다.
+     */
+    if (!response.ok) {
+        throw new Error(
+            `프로젝트 상세 조회 실패 (HTTP ${response.status})`
+        )
+    }
+
+    /*
+     * [응답 JSON 변환]
+     *
+     * ProjectResponse는 목록과 달리
+     * 단일 프로젝트 객체를 반환한다.
+     */
+    const project = await response.json()
+
+    /*
+     * [응답 구조 검증]
+     *
+     * 응답에 프로젝트 ID가 있는지 확인한다.
+     * 요청한 프로젝트와 응답 ID도 비교한다.
+     *
+     * 이 검사는 화면에 잘못된 프로젝트가 표시되는
+     * 상황을 발견하기 위한 기본 방어 코드이다.
+     */
+    if (
+        !project ||
+        typeof project !== 'object' ||
+        Array.isArray(project) ||
+        Number(project.projectId) !== id
+    ) {
+        throw new Error(
+            '프로젝트 상세 응답 형식이 올바르지 않습니다.'
+        )
+    }
+
+    // 조회한 프로젝트 정보를 호출한 페이지에 반환한다.
+    return project
+}
+
+
+/*
+ * ============================================================
+ * 4. 프로젝트 정보 수정
+ * ============================================================
+ *
+ * [함수명]
+ * updateProject(projectId, projectData)
+ *
+ * [파일 위치]
+ * src/services/projectApi.js
+ *
+ * [목적]
+ * 기존 프로젝트의 이름, 설명, 자료 수집 키워드를 수정한다.
+ *
+ * [관련 백엔드]
+ * - ProjectController.updateProject()
+ * - ProjectUpdateRequest.java
+ * - ProjectService.updateProject()
+ *
+ * [HTTP 요청]
+ * PUT /api/projects/{projectId}
+ *
+ * [요청 JSON]
+ * {
+ *   "projectName": "수정한 프로젝트명",
+ *   "description": "수정한 설명",
+ *   "crawlKeyword": "수정한 키워드"
+ * }
+ *
+ * [수정 권한]
+ * - ACTIVE + LEADER
+ * - ACTIVE + VICE_LEADER
+ *
+ * 일반 MEMBER는 프로젝트 정보를 수정할 수 없다.
+ *
+ * [팀원 인계]
+ * - 권한 검사는 백엔드에서 최종 수행한다.
+ * - 프론트엔드에서는 수정 버튼 표시를 별도로 제어한다.
+ * - ownerId, projectId, status는 수정 요청에 포함하지 않는다.
+ * - 로그인 기능 통합 시 인증 처리 방식을 확인한다.
+ *
+ * [주의]
+ * 이 함수는 실제 DB 데이터를 변경하는 PUT 요청이다.
+ * 프로젝트 설정 화면에서 사용자가 저장 버튼을
+ * 누를 때만 호출해야 한다.
+ * ============================================================
+ */
+export async function updateProject(projectId, projectData) {
+
+    /*
+     * [프로젝트 ID 검증]
+     *
+     * Number() : 전달받은 값을 숫자로 변환
+     * Number.isSafeInteger() : 안전한 정수인지 확인
+     *
+     * 유효하지 않은 ID에 대해 API 요청을 보내지 않는다.
+     */
+    const id = Number(projectId)
+
+    if (!Number.isSafeInteger(id) || id <= 0) {
+        throw new Error('올바른 프로젝트 ID가 아닙니다.')
+    }
+
+    /*
+     * [수정할 프로젝트명]
+     *
+     * 앞뒤 공백을 제거한다.
+     * 프로젝트명은 필수 입력값이다.
+     *
+     * 백엔드에서도 빈 이름 및 100자 초과를 검증한다.
+     */
+    const projectName = projectData?.projectName?.trim()
+
+    if (!projectName) {
+        throw new Error('프로젝트명을 입력해 주세요.')
+    }
+
+    if (projectName.length > 100) {
+        throw new Error('프로젝트명은 100자 이하로 입력해 주세요.')
+    }
+
+    /*
+     * [요청 데이터 구성]
+     *
+     * ProjectUpdateRequest에 정의된 세 필드만 사용한다.
+     *
+     * 입력값이 비어 있는 선택 항목은 null로 전달한다.
+     *
+     * [주의]
+     * updateProject()는 전체 수정 방식이다.
+     * 기존 값을 유지하려면 폼에 기존 데이터를
+     * 미리 채워 넣고 그 값을 함께 전달해야 한다.
+     */
+    const requestBody = {
+        projectName,
+        description: projectData.description?.trim() || null,
+        crawlKeyword: projectData.crawlKeyword?.trim() || null,
+    }
+
+    /*
+     * [PUT 요청]
+     *
+     * PUT은 지정한 프로젝트 리소스의 정보를 수정한다.
+     *
+     * Content-Type:
+     * 서버에 JSON 데이터를 전달한다는 의미
+     *
+     * JSON.stringify():
+     * JavaScript 객체를 JSON 문자열로 변환
+     *
+     * Vite Proxy가 /api 요청을 백엔드로 전달한다.
+     */
+    const response = await fetch(
+        `${PROJECT_API_URL}/${id}`,
+        {
+            method: 'PUT',
+
+            headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+            },
+
+            body: JSON.stringify(requestBody),
+        }
+    )
+
+    /*
+     * [HTTP 오류 처리]
+     *
+     * 서버 응답이 성공 범위(200~299)가 아니면
+     * 오류를 발생시킨다.
+     *
+     * 권한 부족, 유효성 검증 실패, 서버 오류 등이
+     * 발생할 수 있다.
+     *
+     * 실제 HTTP 상태 코드는 백엔드 예외 처리 정책에 따른다.
+     *
+     * [팀원 인계 / TODO]
+     * 추후 공통 API 오류 처리 방식을 도입하면
+     * 서버가 반환하는 오류 메시지도 표시하도록 개선한다.
+     */
+    if (!response.ok) {
+        throw new Error(
+            `프로젝트 수정 실패 (HTTP ${response.status})`
+        )
+    }
+
+    /*
+     * [수정 성공 응답]
+     *
+     * ProjectController는 수정된 ProjectResponse를 반환한다.
+     *
+     * 해당 데이터를 ProjectDetailPage.jsx에서 사용해
+     * 화면의 프로젝트 정보를 갱신할 수 있다.
+     */
+    const updatedProject = await response.json()
+
+    /*
+     * [응답 검증]
+     *
+     * 요청한 프로젝트 ID와 응답 프로젝트 ID가
+     * 동일한지 확인한다.
+     */
+    if (
+        !updatedProject ||
+        typeof updatedProject !== 'object' ||
+        Array.isArray(updatedProject) ||
+        Number(updatedProject.projectId) !== id
+    ) {
+        throw new Error(
+            '수정 응답을 확인할 수 없습니다. 프로젝트 정보를 다시 조회해 주세요.'
+        )
+    }
+
+    // 수정된 프로젝트 정보를 호출한 컴포넌트에 반환한다.
+    return updatedProject
+}
+
+/*
+ * ============================================================
+ * 5. 프로젝트 ACTIVE 멤버 목록 조회
+ * ============================================================
+ *
+ * [함수명]
+ * getProjectMembers(projectId)
+ *
+ * [파일 위치]
+ * src/services/projectApi.js
+ *
+ * [목적]
+ * 특정 프로젝트에 ACTIVE 상태로 참여 중인
+ * 사용자 목록과 프로젝트 내 역할을 조회한다.
+ *
+ * [HTTP 요청]
+ * GET /api/projects/{projectId}/members
+ *
+ * [관련 백엔드]
+ * - ProjectController.getActiveProjectMembers()
+ * - ProjectService.getActiveProjectMembers()
+ * - ProjectMember.java
+ *
+ * [응답 데이터]
+ * ProjectMember 객체 배열.
+ *
+ * 주요 필드:
+ * - projectMemberId : 참여 기록 ID
+ * - projectId       : 프로젝트 ID
+ * - userId          : 사용자 ID
+ * - position        : LEADER / VICE_LEADER / MEMBER
+ * - memberStatus    : ACTIVE 등
+ *
+ * [활용 예정]
+ *
+ * 1. 프로젝트 설정
+ *    - 현재 사용자의 position 확인
+ *    - 수정 권한이 있는지 판단
+ *
+ * 2. 프로젝트 멤버 관리
+ *    - 참여 멤버 목록 표시
+ *    - 사용자 역할 표시
+ *
+ * 3. 업무 관리
+ *    - 담당자로 지정할 수 있는 ACTIVE 멤버 목록 제공
+ *
+ * [권한 관련 주의]
+ * - API는 ACTIVE 프로젝트 멤버가 조회할 수 있다.
+ * - 버튼 표시 여부는 사용자 편의를 위한 것이다.
+ * - 실제 수정/삭제 권한은 백엔드 Service가 검사한다.
+ *
+ * [팀원 인계 / TODO]
+ * - 로그인 기능 통합 후 현재 userId를 인증 상태에서 가져온다.
+ * - 현재 사용자 ID와 멤버 목록의 userId를 비교한다.
+ * - 운영 환경에서 사용자 ID를 임의로 지정하지 않는다.
+ *
+ * 주의:
+ * 이 API는 ProjectMember Entity를 직접 반환한다.
+ * 사용자 닉네임 등의 정보가 응답에 포함된다고
+ * 가정해서는 안 된다.
+ * ============================================================
+ */
+export async function getProjectMembers(projectId) {
+
+    /*
+     * [프로젝트 ID 검사]
+     *
+     * Number.isSafeInteger():
+     * 안전한 JavaScript 정수인지 확인한다.
+     *
+     * projectId는 1 이상의 정수여야 한다.
+     */
+    const id = Number(projectId)
+
+    if (!Number.isSafeInteger(id) || id <= 0) {
+        throw new Error('올바른 프로젝트 ID가 아닙니다.')
+    }
+
+    /*
+     * [HTTP GET 요청]
+     *
+     * 예:
+     * GET /api/projects/5/members
+     *
+     * Vite Proxy를 통해 Spring Boot로 전달한다.
+     *
+     * 현재는 별도의 사용자 헤더를 전달하지 않는다.
+     * 사용자 식별 방식은 백엔드 CurrentUserService에 따른다.
+     */
+    const response = await fetch(
+        `${PROJECT_API_URL}/${id}/members`,
+        {
+            method: 'GET',
+
+            headers: {
+                Accept: 'application/json',
+            },
+        }
+    )
+
+    /*
+     * [HTTP 응답 검사]
+     *
+     * HTTP 200~299는 성공으로 처리한다.
+     *
+     * 접근 권한이 없거나 프로젝트가 삭제된 경우
+     * 백엔드 예외 처리 정책에 따라 오류가 반환될 수 있다.
+     */
+    if (!response.ok) {
+        throw new Error(
+            `프로젝트 멤버 조회 실패 (HTTP ${response.status})`
+        )
+    }
+
+    /*
+     * [JSON 변환]
+     *
+     * 응답은 멤버 객체들이 들어 있는 배열이다.
+     *
+     * ProjectMember Entity가 직접 반환되므로
+     * 실제 JSON 필드는 백엔드 Entity 구조를 따른다.
+     */
+    const members = await response.json()
+
+    /*
+     * [응답 형식 확인]
+     *
+     * 멤버 목록은 배열이어야 한다.
+     * 배열이 아니면 예상하지 못한 서버 응답으로 처리한다.
+     */
+    if (!Array.isArray(members)) {
+        throw new Error(
+            '프로젝트 멤버 응답이 배열 형식이 아닙니다.'
+        )
+    }
+
+    /*
+     * [프로젝트 ID 일치 확인]
+     *
+     * 다른 프로젝트 멤버 데이터가 섞여 있으면
+     * 정상적인 응답으로 취급하지 않는다.
+     *
+     * 서버의 권한 검증을 대신하는 코드는 아니다.
+     */
+    const hasInvalidMember = members.some(
+        (member) =>
+            !member ||
+            Number(member.projectId) !== id
+    )
+
+    if (hasInvalidMember) {
+        throw new Error(
+            '프로젝트 멤버 응답에 잘못된 데이터가 포함되어 있습니다.'
+        )
+    }
+
+    // 조회한 프로젝트 멤버 목록 반환
+    return members
+}
+
+
+/*
+ * ============================================================
+ * 6. 프로젝트 삭제 (Soft Delete)
+ * ============================================================
+ *
+ * [함수명]
+ * deleteProject(projectId)
+ *
+ * [HTTP 요청]
+ * DELETE /api/projects/{projectId}
+ *
+ * [관련 백엔드]
+ * - ProjectController.deleteProject()
+ * - ProjectService.deleteProject()
+ *
+ * [삭제 방식]
+ * Oracle PROJECT 행을 실제로 DELETE하지 않는다.
+ *
+ * 대신 다음처럼 변경한다.
+ * PROJECT.status = 'DELETED'
+ * PROJECT.updated_at = 현재 시각
+ *
+ * [삭제 권한]
+ * ACTIVE + LEADER만 가능하다.
+ *
+ * VICE_LEADER와 MEMBER는 삭제할 수 없다.
+ *
+ * [성공 응답]
+ * Controller 메서드의 반환형은 void이다.
+ * 따라서 JSON 응답이 있다고 가정하지 않는다.
+ *
+ * [팀원 인계]
+ * - 이 함수는 실제 DB 상태를 변경할 수 있다.
+ * - 사용자의 삭제 확인 이후에만 호출해야 한다.
+ * - 삭제 성공 후에는 프로젝트 목록으로 이동한다.
+ * - 삭제 권한은 백엔드에서 최종 검증한다.
+ * - 삭제된 프로젝트 복구 기능은 별도 구현 대상이다.
+ * ============================================================
+ */
+export async function deleteProject(projectId) {
+
+    /*
+     * [1. 프로젝트 ID 검증]
+     *
+     * 잘못된 ID로 서버에 DELETE 요청을 보내지 않는다.
+     */
+    const id = Number(projectId)
+
+    if (!Number.isSafeInteger(id) || id <= 0) {
+        throw new Error('올바른 프로젝트 ID가 아닙니다.')
+    }
+
+    /*
+     * [2. DELETE 요청]
+     *
+     * 삭제할 프로젝트는 URL의 projectId로 지정한다.
+     *
+     * 요청 Body는 필요하지 않다.
+     *
+     * [주의]
+     * 이 코드는 호출되는 순간 실제 삭제 요청을 보낸다.
+     * 삭제 확인창 자체는 다음 단계에서 구현한다.
+     */
+    const response = await fetch(
+        `${PROJECT_API_URL}/${id}`,
+        {
+            method: 'DELETE',
+
+            headers: {
+                Accept: 'application/json',
+            },
+        }
+    )
+
+    /*
+     * [3. 응답 검사]
+     *
+     * HTTP 200~299 범위면 성공으로 판단한다.
+     *
+     * 권한 부족, 존재하지 않는 프로젝트,
+     * 이미 삭제된 프로젝트 등의 경우
+     * 백엔드의 예외 처리 정책에 따라 실패할 수 있다.
+     */
+    if (!response.ok) {
+        throw new Error(
+            `프로젝트 삭제 실패 (HTTP ${response.status})`
+        )
+    }
+
+    /*
+     * [4. 성공 처리]
+     *
+     * 백엔드 Controller는 void를 반환하므로
+     * response.json()을 호출하지 않는다.
+     *
+     * 삭제 성공 여부만 호출한 컴포넌트에 전달한다.
+     */
+    return true
+}
+
