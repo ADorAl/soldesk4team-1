@@ -5,6 +5,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.Optional;
 
+import java.util.List;
+
 /*
  * PROJECT_MEMBER 테이블에 접근하기 위한 Repository.
  *
@@ -126,4 +128,35 @@ public interface ProjectMemberRepository
         Optional<ProjectMember> findByProjectIdAndUserId(
                         Long projectId,
                         Long userId);
+
+        /*
+         * 특정 사용자가 받은 PROJECT_MEMBER 행 중에서
+         * 원하는 member_status 상태의 목록을 조회한다.
+         *
+         * 초대 조회에서는:
+         *
+         * userId = 현재 사용자
+         * memberStatus = "PENDING"
+         *
+         * 조건으로 사용한다.
+         *
+         * 즉 현재 사용자가 아직 수락/거절하지 않은
+         * 프로젝트 초대 목록을 가져오는 데 사용한다.
+         */
+        List<ProjectMember> findByUserIdAndMemberStatus(
+                        Long userId,
+                        String memberStatus);
+
+        /*
+         * 특정 프로젝트에 현재 참여 중인 ACTIVE 멤버 목록을 조회한다.
+         *
+         * 프로젝트 상세 화면이나 멤버 관리 화면에서
+         * 실제 참여 중인 사용자 목록을 가져오는 데 사용한다.
+         *
+         * PENDING / REJECTED / LEFT 상태의 사용자는
+         * 현재 프로젝트 참여자가 아니므로 조회 대상에서 제외한다.
+         */
+        List<ProjectMember> findByProjectIdAndMemberStatus(
+                        Long projectId,
+                        String memberStatus);
 }
