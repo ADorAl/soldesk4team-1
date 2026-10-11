@@ -130,7 +130,17 @@ public class ProjectMember {
      * INSERT할 때 Java에서 별도로 값을 전달하지 않고
      * Oracle이 시간을 기록하도록 한다.
      */
-    @Column(name = "INVITED_AT", insertable = false, updatable = false)
+    /*
+     * 초대가 생성되거나 다시 발송된 시간.
+     *
+     * 최초 INSERT에서는 값을 직접 넣지 않으면
+     * DB의 DEFAULT SYSTIMESTAMP가 사용된다.
+     *
+     * REJECTED / LEFT 사용자를 재초대할 때는
+     * Service에서 현재 시각으로 갱신할 수 있도록
+     * updatable = false는 사용하지 않는다.
+     */
+    @Column(name = "INVITED_AT", insertable = false)
     private LocalDateTime invitedAt;
 
     /*
