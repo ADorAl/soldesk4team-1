@@ -23,7 +23,7 @@
  */
 
 // 개발 전용 사용자 선택: 현재는 받은 초대 확인을 위해 USER_ID 2 사용.
-const DEV_USER_ID = 2
+const DEV_USER_ID = 1
 
 /*
  * 화면에서 현재 사용자 ID를 비교할 때 사용한다.

@@ -45,6 +45,10 @@ import { getDevUserId } from '../config/devUser.js'
 import {
     getProjectDetail,
     getProjectMembers,
+    updateProjectMemberRole,
+    transferProjectLeader,
+    leaveProject,
+    removeProjectMember,
 } from '../services/projectApi'
 
 // 프로젝트별 현재 사용자 역할을 조회하고 표시하는 공통 컴포넌트
@@ -190,6 +194,48 @@ function ProjectDetailPage({ projectId, onBack }) {
     const [members, setMembers] = useState([])
     const [membersLoading, setMembersLoading] = useState(true)
     const [membersError, setMembersError] = useState(null)
+
+    /*
+     * [65단계: 멤버 역할 변경 요청 상태]
+     * changingUserId : 변경 중인 멤버의 USER_ID (중복 요청 방지)
+     * roleChangeError: 실패 메시지 (기존 멤버 조회 오류와 구분)
+     * 역할 변경 성공 후에는 members를 서버에서 다시 가져와
+     * 역할 뱃지와 수정·초대·삭제 권한 표시를 함께 동기화한다.
+     */
+    const [changingUserId, setChangingUserId] = useState(null)
+    const [roleChangeError, setRoleChangeError] = useState(null)
+
+    /*
+     * [69단계: 리더 양도 처리 상태]
+     * transferringLeader : API 요청 중 다른 변경 버튼 중복 실행 방지
+     * leaderTransferError: 양도/재조회 과정에서 발생한 오류 안내
+     * 성공 후에는 PROJECT.ownerId와 members의 역할이 함께 바뀌므로
+     * 프로젝트 상세와 멤버 목록을 모두 새로 조회한다.
+     */
+    const [transferringLeader, setTransferringLeader] = useState(false)
+    const [leaderTransferError, setLeaderTransferError] = useState(null)
+
+    /*
+     * [74단계: 자진 탈퇴 처리 상태]
+     * leavingProject : 탈퇴 POST 요청 중 중복 클릭/다른 멤버 변경을 차단한다.
+     * leaveProjectError : 탈퇴 요청 실패 메시지를 멤버 목록의 탈퇴 영역에 전달한다.
+     * 탈퇴 성공 시 현재 사용자는 상세 페이지를 조회할 권한이 없어질 수 있으므로
+     * 멤버 목록 재조회 대신 프로젝트 목록으로 이동한다.
+     */
+    const [leavingProject, setLeavingProject] = useState(false)
+    const [leaveProjectError, setLeaveProjectError] = useState(null)
+
+    /*
+     * [78단계: 멤버 강제 제외 처리 상태]
+     * removingUserId : 제외 요청 중인 대상 사용자 ID. 중복 클릭 차단과 버튼 로딩에 사용한다.
+     * removeMemberError : POST 또는 후속 멤버 재조회 오류 메시지.
+     * 실제 제외된 사용자는 DB에서 MEMBER_STATUS=LEFT로 기록되며,
+     * 목록에는 ACTIVE 멤버만 표시된다. 자진 탈퇴와 같은 LEFT 값이므로
+     * DB 상태만으로 두 행위를 구별할 수는 없다.
+     */
+    const [removingUserId, setRemovingUserId] = useState(null)
+    const [removeMemberError, setRemoveMemberError] = useState(null)
+
 
     /*
      * [프로젝트 상세 API 호출]
@@ -467,6 +513,218 @@ function ProjectDetailPage({ projectId, onBack }) {
         myMembership != null &&
         ['LEADER', 'VICE_LEADER'].includes(myMembership.position)
 
+
+    /*
+     * [65단계: 역할 변경 권한]
+     * MEMBER/VICE_LEADER 변경은 ACTIVE LEADER만 요청할 수 있다.
+     * 역할 변경은 프로젝트 수정 권한과 별개이므로 canEditProject를 재사용하지 않는다.
+     * 최종 역할 검증은 Spring Boot ProjectService가 수행한다.
+     */
+    const canManageRoles =
+        !membersLoading &&
+        !membersError &&
+        myMembership?.position === 'LEADER'
+
+    /*
+     * [65단계: 역할 변경 실행]
+     * 자식 목록에서 사용자 ID와 선택한 역할을 전달받는다.
+     * 1) 현재 리더인지와 대상 사용자 상태를 화면에서도 검사한다.
+     * 2) PUT 요청 중에는 변경 버튼을 잠가 중복 요청을 막는다.
+     * 3) 성공하면 GET members로 서버 최신값을 재조회한다.
+     * 4) 실패하면 roleChangeError를 표시하고 기존 목록을 유지한다.
+     *
+     * [주의] 초대 수락/역할 변경 등의 실제 권한은 백엔드가 최종 판단한다.
+     */
+    async function handleRoleChange(targetUserId, newPosition) {
+        if (!canManageRoles || changingUserId != null || transferringLeader) return
+
+        const target = members.find((member) =>
+            Number(member.userId) === Number(targetUserId) &&
+            member.memberStatus === 'ACTIVE'
+        )
+        if (!target || target.position === 'LEADER' ||
+            Number(targetUserId) === Number(currentUserId) ||
+            !['MEMBER', 'VICE_LEADER'].includes(newPosition) ||
+            target.position === newPosition) return
+
+        setChangingUserId(targetUserId)
+        setRoleChangeError(null)
+
+        try {
+            await updateProjectMemberRole(projectId, targetUserId, newPosition)
+            // 변경 결과는 현재 프로젝트의 전체 멤버 목록으로 재조회한다.
+            // ProjectRoleInfo, ProjectMemberList, 권한 계산이 같은 members를 사용한다.
+            const refreshedMembers = await getProjectMembers(projectId)
+            setMembers(refreshedMembers)
+            setMembersError(null)
+        } catch (err) {
+            setRoleChangeError(
+                err instanceof Error ? err.message : '역할 변경 또는 멤버 목록 갱신에 실패했습니다.'
+            )
+        } finally {
+            setChangingUserId(null)
+        }
+    }
+
+    /*
+     * [69단계: 리더 양도 권한]
+     * 조회/수정 권한과 독립적으로 ACTIVE LEADER만 허용한다.
+     * 멤버 조회에 실패했을 때는 안전하게 양도 UI를 숨긴다.
+     * 최종 권한·동시성 검증은 백엔드에서 수행한다.
+     */
+    const canTransferLeader =
+        !membersLoading &&
+        !membersError &&
+        myMembership?.position === 'LEADER'
+
+    /*
+     * [69단계: 리더 양도]
+     * 1) 선택된 사용자가 본인이 아닌 ACTIVE 멤버인지 확인한다.
+     * 2) 사용자 클릭으로 시작된 경우에만 POST 양도 API를 실행한다.
+     * 3) 성공하면 PROJECT.ownerId와 PROJECT_MEMBER의 역할을 각각 재조회한다.
+     * 4) 실패 시 상태를 임의로 바꾸지 않고 오류를 보여준다.
+     *
+     * 주의: API 요청 성공 후 재조회만 실패할 수도 있다. 이때 재요청하면
+     * 이미 새 리더로 바뀐 상태이므로 무작정 다시 양도하지 않아야 한다.
+     * 권한이 달라졌을 수 있으므로 목록 갱신이 실패하면 멤버 목록을 비우고
+     * 재조회 오류 상태로 바꿔 오래된 리더 권한 UI를 사용하지 않도록 한다.
+     */
+    async function handleTransferLeader(targetUserId) {
+        if (!canTransferLeader || transferringLeader || changingUserId != null) return
+
+        const target = members.find((member) =>
+            Number(member.userId) === Number(targetUserId) &&
+            member.memberStatus === 'ACTIVE' &&
+            Number(member.userId) !== Number(currentUserId)
+        )
+        if (!target) return
+
+        setTransferringLeader(true)
+        setLeaderTransferError(null)
+        setRoleChangeError(null)
+
+        try {
+            await transferProjectLeader(projectId, targetUserId)
+
+            // 리더/소유자 정보가 바뀐 후 상세 및 멤버를 동시에 다시 읽는다.
+            // 반환 결과는 새로운 서버 상태이므로 프론트에서 역할을 추측하지 않는다.
+            const [updatedProject, updatedMembers] = await Promise.all([
+                getProjectDetail(projectId),
+                getProjectMembers(projectId),
+            ])
+            setProject(updatedProject)
+            setMembers(updatedMembers)
+            setMembersError(null)
+        } catch (err) {
+            // 양도 성공 후의 재조회 오류 가능성이 있으므로 안전하게 화면 권한을 차단한다.
+            setMembers([])
+            setMembersError('멤버 상태를 확인할 수 없습니다. 페이지를 새로고침해 주세요.')
+            setLeaderTransferError(
+                err instanceof Error ? err.message : '리더 양도 또는 최신 정보 조회에 실패했습니다.'
+            )
+        } finally {
+            setTransferringLeader(false)
+        }
+    }
+
+    /*
+     * [78단계: 강제 제외 권한]
+     * 조회 권한이나 프로젝트 수정 권한과 별개로 ACTIVE LEADER만 사용할 수 있다.
+     * 서버에서는 현재 사용자/제외 대상의 권한과 상태를 다시 확인한다.
+     */
+    const canRemoveMembers =
+        !membersLoading &&
+        !membersError &&
+        myMembership?.position === 'LEADER'
+
+    /*
+     * [78단계: 멤버 강제 제외]
+     * 1) ProjectMemberList가 확인 입력을 완료하고 버튼을 눌러 targetUserId를 전달한다.
+     * 2) 리더 권한 및 대상 ACTIVE 여부를 화면에서도 한 번 더 검증한다.
+     * 3) POST /api/projects/{projectId}/members/{userId}/remove 요청을 보낸다.
+     * 4) 성공 시 서버의 ACTIVE 멤버 목록을 다시 가져와 화면/권한을 동기화한다.
+     * 5) 제외 자체는 성공했지만 재조회가 실패한 경우에도 오래된 권한을 보여주지 않도록
+     *    목록과 권한을 초기화하고 새로고침을 안내한다. 동일 요청 재실행은 주의해야 한다.
+     *
+     * [주의] 버튼 숨김과 ID 확인은 UI 안전장치일 뿐 최종 보안 검증이 아니다.
+     */
+    async function handleRemoveMember(targetUserId) {
+        if (!canRemoveMembers || removingUserId != null ||
+            changingUserId != null || transferringLeader || leavingProject) return
+
+        const target = members.find((member) =>
+            Number(member.userId) === Number(targetUserId) &&
+            member.memberStatus === 'ACTIVE' &&
+            member.position !== 'LEADER' &&
+            Number(member.userId) !== Number(currentUserId)
+        )
+        if (!target) return
+
+        setRemovingUserId(targetUserId)
+        setRemoveMemberError(null)
+        let removalSucceeded = false
+
+        try {
+            await removeProjectMember(projectId, targetUserId)
+            removalSucceeded = true
+            const refreshedMembers = await getProjectMembers(projectId)
+            setMembers(refreshedMembers)
+            setMembersError(null)
+            setRoleChangeError(null)
+        } catch (err) {
+            if (removalSucceeded) {
+                // 재조회 오류 시 낡은 멤버 배열로 역할 변경/양도를 이어가지 않게 차단한다.
+                setMembers([])
+                setMembersError('멤버 목록을 다시 확인할 수 없습니다. 페이지를 새로고침해 주세요.')
+            }
+            setRemoveMemberError(
+                err instanceof Error ? err.message : '멤버 제외 또는 목록 갱신에 실패했습니다.'
+            )
+        } finally {
+            setRemovingUserId(null)
+        }
+    }
+
+    /*
+     * [74단계: 자진 탈퇴 UI 권한]
+     * 현재 요청 사용자가 ACTIVE MEMBER 또는 ACTIVE VICE_LEADER일 때만 표시한다.
+     * 멤버 조회 실패/로딩 중에는 안전하게 비활성화한다.
+     * LEADER는 먼저 다른 ACTIVE 멤버에게 리더 권한을 양도해야 한다.
+     * 실제 권한은 Spring Boot Service에서 반드시 다시 검사한다.
+     */
+    const canLeaveProject =
+        !membersLoading &&
+        !membersError &&
+        myMembership != null &&
+        ['MEMBER', 'VICE_LEADER'].includes(myMembership.position)
+
+    /*
+     * [74단계: 자진 탈퇴 요청]
+     * 자식 ProjectMemberList가 확인 ID 입력 후 버튼을 눌렀을 때만 호출한다.
+     * 1. 권한, 처리 중 상태를 확인한다.
+     * 2. POST /api/projects/{projectId}/leave 요청을 보낸다.
+     * 3. 정상 응답을 받으면 현재 사용자는 LEFT 상태이므로 목록으로 이동한다.
+     * 4. 실패하면 DB 상태를 임의로 변경하지 않고 오류를 표시한다.
+     *
+     * 참고: 프로젝트 목록은 다른 페이지에서 새로 조회한다.
+     * 로그인 통합 시 개발용 사용자 ID는 인증 사용자로 교체해야 한다.
+     */
+    async function handleLeaveProject() {
+        if (!canLeaveProject || leavingProject || transferringLeader || changingUserId != null) return
+
+        setLeavingProject(true)
+        setLeaveProjectError(null)
+        try {
+            await leaveProject(projectId)
+            navigate('/projects', { replace: true })
+        } catch (err) {
+            setLeaveProjectError(
+                err instanceof Error ? err.message : '프로젝트 탈퇴에 실패했습니다.'
+            )
+        } finally {
+            setLeavingProject(false)
+        }
+    }
 
     const canDeleteProject =
         !membersLoading &&
@@ -808,8 +1066,9 @@ function ProjectDetailPage({ projectId, onBack }) {
                              * ProjectInviteForm은 사용자 ID를 입력받아 초대 POST 요청을 보낸다.
                              * 초대 직후 멤버 상태는 PENDING이며, 수락 전까지 목록에는 나타나지 않는다.
                              *
-                             * 추후 초대 수락/역할 변경/탈퇴 구현 시 부모 목록을 재조회하도록
-                             * 별도 갱신 함수를 연결해야 한다. 현재는 불필요한 중복 조회를 하지 않는다.
+                             * 역할 변경 시 부모 handleRoleChange가 서버 목록을 재조회한다.
+                             * 자진 탈퇴 성공 시 상세 접근 권한이 없어질 수 있어 목록 화면으로 이동한다.
+                             * 강제 제외 성공 후에는 ACTIVE 멤버 목록을 다시 조회해 목록/권한을 갱신한다.
                              */
                             <div className="space-y-6">
                                 <ProjectMemberList
@@ -817,6 +1076,22 @@ function ProjectDetailPage({ projectId, onBack }) {
                                     loading={membersLoading}
                                     error={membersError}
                                     currentUserId={currentUserId}
+                                    canManageRoles={canManageRoles}
+                                    onRoleChange={handleRoleChange}
+                                    changingUserId={changingUserId}
+                                    roleChangeError={roleChangeError}
+                                    canTransferLeader={canTransferLeader}
+                                    onTransferLeader={handleTransferLeader}
+                                    transferringLeader={transferringLeader}
+                                    leaderTransferError={leaderTransferError}
+                                    canLeaveProject={canLeaveProject}
+                                    onLeaveProject={handleLeaveProject}
+                                    leavingProject={leavingProject}
+                                    leaveProjectError={leaveProjectError}
+                                    canRemoveMembers={canRemoveMembers}
+                                    onRemoveMember={handleRemoveMember}
+                                    removingUserId={removingUserId}
+                                    removeMemberError={removeMemberError}
                                 />
                                 <ProjectInviteForm
                                     projectId={projectId}
