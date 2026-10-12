@@ -14,6 +14,7 @@
  * /projects           : 프로젝트 목록
  * /projects/new       : 프로젝트 생성
  * /projects/:projectId: 프로젝트 상세
+ * /invitations       : 받은 프로젝트 초대
  *
  * [관련 파일]
  * - main.jsx : BrowserRouter 설정
@@ -22,9 +23,8 @@
  * - pages/ProjectCreatePage.jsx : 프로젝트 생성
  * - pages/ProjectDetailPage.jsx : 프로젝트 상세
  *
- * [이번 변경]
- * 기존 useState 기반 화면 전환을
- * React Router 기반 URL 이동으로 변경한다.
+ * [58단계 변경]
+ * 받은 초대 페이지에서 수락/거절 버튼과 기존 프로젝트 API를 연결한다.
  *
  * [팀원 인계]
  * 1. BrowserRouter는 main.jsx에 이미 존재한다.
@@ -42,6 +42,14 @@
  *    식별 방식은 기존 백엔드 설정을 따른다.
  * ============================================================
  */
+
+import { useEffect, useState } from 'react'
+import ProjectInvitationList from './components/ProjectInvitationList'
+import {
+  getMyPendingInvitations,
+  acceptProjectInvitation,
+  rejectProjectInvitation,
+} from './services/projectApi'
 
 import {
   Navigate,
@@ -314,6 +322,114 @@ function ProjectDetailRoute() {
 
 
 // ------------------------------------------------------------
+// 4. 받은 초대 페이지 (58단계: 수락/거절 연결)
+// ------------------------------------------------------------
+/*
+ * [데이터 흐름]
+ * 최초 화면 진입 → GET /api/projects/invitations → PENDING 목록 표시
+ * 사용자 버튼 클릭 → POST /api/projects/{id}/invitations/accept 또는 reject
+ * 요청 성공 → GET 재조회 → 처리된 초대를 목록에서 제외
+ *
+ * [권한과 안전]
+ * - 사용자 ID를 임의로 요청 본문에 넣지 않는다.
+ * - 실제 초대 대상 여부와 상태는 Spring Boot가 재검증한다.
+ * - 버튼을 클릭하기 전에는 POST 요청을 보내지 않는다.
+ * - 진행 중 중복 요청을 막고, 오류가 나면 기존 목록을 유지한다.
+ * - 개발용 X-Dev-User-Id 헤더는 projectApi.js의 공통 설정을 따른다.
+ * - 인증 연동 시에는 백엔드 로그인 사용자 정보를 기준으로 교체한다.
+ *
+ * [Tailwind]
+ * min-w-0: 긴 콘텐츠가 가로 영역을 넘지 않도록 최소 너비 허용
+ * flex-1: 사이드바 제외한 남은 가로 폭 차지
+ * p-8: 본문 안쪽 여백
+ * max-w-5xl: 목록의 최대 폭 제한
+ */
+function ProjectInvitationsPage() {
+  const [invitations, setInvitations] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [actionError, setActionError] = useState(null)
+  const [processingProjectId, setProcessingProjectId] = useState(null)
+
+  // 최초 진입 시에만 받은 초대를 조회한다. 화면 이탈 시 state 갱신 방지.
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadInvitations() {
+      try {
+        const result = await getMyPendingInvitations()
+        if (!cancelled) setInvitations(result)
+      } catch (requestError) {
+        if (!cancelled) {
+          setError(requestError instanceof Error ? requestError.message : '초대 조회 중 오류가 발생했습니다.')
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    loadInvitations()
+    return () => { cancelled = true }
+  }, [])
+
+  /*
+   * 초대 수락/거절 공통 핸들러.
+   * action은 코드에서 정한 'accept' 또는 'reject'만 사용한다.
+   * 처리 성공 후 다시 GET으로 조회하므로 서버 상태가 UI의 최종 기준이다.
+   */
+  async function handleInvitationAction(projectId, action) {
+    if (processingProjectId !== null || loading) return
+
+    // 수락/거절을 사용자가 명시적으로 눌렀을 때만 변경 API를 호출한다.
+    setProcessingProjectId(projectId)
+    setActionError(null)
+
+    try {
+      if (action === 'accept') {
+        await acceptProjectInvitation(projectId)
+      } else if (action === 'reject') {
+        await rejectProjectInvitation(projectId)
+      } else {
+        throw new Error('지원하지 않는 초대 처리 작업입니다.')
+      }
+
+      // POST 완료 후 서버로부터 실제 남아 있는 PENDING 목록을 다시 조회한다.
+      const latestInvitations = await getMyPendingInvitations()
+      setInvitations(latestInvitations)
+      setError(null)
+    } catch (requestError) {
+      // POST 실패 또는 재조회 실패를 표시하고, 화면의 목록을 임의로 제거하지 않는다.
+      setActionError(requestError instanceof Error ? requestError.message : '초대 처리 중 오류가 발생했습니다.')
+    } finally {
+      setProcessingProjectId(null)
+    }
+  }
+
+  return (
+    <main className="min-w-0 flex-1 p-8">
+      <div className="mx-auto max-w-5xl">
+        <header className="mb-6">
+          <h1 className="text-2xl font-bold text-slate-900">받은 초대</h1>
+          <p className="mt-2 text-sm text-slate-600">
+            내가 수락하기를 기다리는 프로젝트 초대를 확인합니다.
+          </p>
+        </header>
+        <ProjectInvitationList
+          invitations={invitations}
+          loading={loading}
+          error={error}
+          actionError={actionError}
+          processingProjectId={processingProjectId}
+          onAccept={(projectId) => handleInvitationAction(projectId, 'accept')}
+          onReject={(projectId) => handleInvitationAction(projectId, 'reject')}
+        />
+      </div>
+    </main>
+  )
+}
+
+
+// ------------------------------------------------------------
 // 4. App 최상위 컴포넌트
 // ------------------------------------------------------------
 
@@ -353,6 +469,10 @@ function App() {
    */
   let activeMenu = 'dashboard'
 
+  if (location.pathname === '/invitations') {
+    activeMenu = 'invitations'
+  }
+
   if (
     location.pathname === '/projects' ||
     location.pathname.startsWith('/projects/')
@@ -384,12 +504,9 @@ function App() {
       return
     }
 
-    /*
-     * 받은 초대 화면은 아직 구현하지 않았다.
-     * 구현되지 않은 경로로 이동시키지 않는다.
-     */
+    // 51단계: 기존 사이드바 메뉴를 실제 받은 초대 경로로 연결한다.
     if (menuId === 'invitations') {
-      window.alert('받은 초대 화면은 아직 구현되지 않았습니다.')
+      navigate('/invitations')
       return
     }
 
@@ -459,6 +576,9 @@ function App() {
           path="/dashboard"
           element={<DashboardPage />}
         />
+
+        {/* 51단계: 받은 초대 조회 페이지 (GET 요청만 사용) */}
+        <Route path="/invitations" element={<ProjectInvitationsPage />} />
 
         {/* ==================================================
             프로젝트 목록
