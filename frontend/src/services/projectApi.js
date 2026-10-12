@@ -1,3 +1,5 @@
+import { getDevUserHeaders } from '../config/devUser.js'
+
 
 /*
  * ============================================================
@@ -35,6 +37,13 @@
  */
 
 
+/*
+ * 54단계: 모든 PROJECT API 요청에 동일한 개발용 사용자 헤더를 첨부한다.
+ * dev 프로필에서만 백엔드가 이 헤더를 사용자 선택에 사용한다.
+ * 프론트에서 이 값을 바꾼다고 실제 로그인/인증이 되는 것은 아니다.
+ * 인증 기능 통합 시 이 import 및 헤더 전송 코드를 제거해야 한다.
+ */
+
 // PROJECT API의 공통 주소
 const PROJECT_API_URL = '/api/projects'
 
@@ -58,6 +67,7 @@ export async function getMyProjects() {
         method: 'GET',
         headers: {
             Accept: 'application/json',
+            ...getDevUserHeaders(),
         },
     })
 
@@ -177,6 +187,7 @@ export async function createProject(projectData) {
         headers: {
             'Content-Type': 'application/json',
             Accept: 'application/json',
+            ...getDevUserHeaders(),
         },
 
         body: JSON.stringify(requestBody),
@@ -321,6 +332,7 @@ export async function getProjectDetail(projectId) {
             method: 'GET',
             headers: {
                 Accept: 'application/json',
+            ...getDevUserHeaders(),
             },
         }
     )
@@ -499,6 +511,7 @@ export async function updateProject(projectId, projectData) {
             headers: {
                 'Content-Type': 'application/json',
                 Accept: 'application/json',
+            ...getDevUserHeaders(),
             },
 
             body: JSON.stringify(requestBody),
@@ -653,6 +666,7 @@ export async function getProjectMembers(projectId) {
 
             headers: {
                 Accept: 'application/json',
+            ...getDevUserHeaders(),
             },
         }
     )
@@ -788,6 +802,7 @@ export async function deleteProject(projectId) {
 
             headers: {
                 Accept: 'application/json',
+            ...getDevUserHeaders(),
             },
         }
     )
@@ -818,3 +833,206 @@ export async function deleteProject(projectId) {
     return true
 }
 
+
+/*
+ * ============================================================
+ * 7. 프로젝트 멤버 초대 요청 (45단계)
+ * ============================================================
+ *
+ * [함수 목적]
+ * 프로젝트에 사용자를 초대하는 HTTP 요청만 담당한다.
+ * 화면의 입력값 관리, 버튼 비활성화, 성공 안내는 React 컴포넌트의 책임이다.
+ *
+ * [백엔드 계약]
+ * - POST /api/projects/{projectId}/invitations
+ * - JSON 요청: { "userId": 숫자 }
+ * - ProjectInviteRequest DTO에는 userId만 있다.
+ * - 응답: 생성 또는 갱신된 ProjectMember 객체(JSON)
+ *
+ * [권한 및 상태]
+ * - 초대하는 사람: 해당 프로젝트의 ACTIVE LEADER 또는 VICE_LEADER
+ * - 초대받는 사람: USERS에 존재해야 함
+ * - 초대 시 멤버 상태: PENDING (바로 ACTIVE가 아님)
+ * - 중복 초대, 본인 초대, 삭제된 프로젝트 등은 서버가 검증한다.
+ *
+ * 프론트엔드 입력 검증은 잘못된 요청을 줄일 뿐이며,
+ * 실제 권한 검사는 반드시 Spring Boot ProjectService가 수행한다.
+ *
+ * [후속 연결]
+ * 추후 초대 폼에서 버튼을 명시적으로 누른 경우에만 호출한다.
+ * 이 함수만 추가하는 45단계에서는 실제 서버에 요청을 보내지 않는다.
+ * ============================================================
+ */
+export async function inviteProjectMember(projectId, targetUserId) {
+    // URL과 요청 본문에 사용할 ID를 각각 검증한다.
+    // 빈 문자열이나 null이 Number()로 0이 되는 경우도 함께 차단한다.
+    const id = Number(projectId)
+    const userId = Number(targetUserId)
+
+    if (projectId == null || String(projectId).trim() === '' ||
+        !Number.isSafeInteger(id) || id <= 0) {
+        throw new Error('올바른 프로젝트 ID가 아닙니다.')
+    }
+
+    if (targetUserId == null || String(targetUserId).trim() === '' ||
+        !Number.isSafeInteger(userId) || userId <= 0) {
+        throw new Error('초대할 사용자 ID는 1 이상의 정수여야 합니다.')
+    }
+
+    // userId 이외에 invitedBy, position, memberStatus 등은 전송하지 않는다.
+    // 해당 값은 로그인 사용자와 초대 정책에 따라 서버가 결정한다.
+    const response = await fetch(`${PROJECT_API_URL}/${id}/invitations`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            ...getDevUserHeaders(),
+        },
+        body: JSON.stringify({ userId }),
+    })
+
+    // fetch는 HTTP 4xx/5xx에 대해 자동으로 throw하지 않으므로 직접 검사한다.
+    // 상태 코드를 포함해 화면 쪽에서 오류 원인을 구분할 단서를 제공한다.
+    if (!response.ok) {
+        throw new Error(`프로젝트 멤버 초대 실패 (HTTP ${response.status})`)
+    }
+
+    // Controller는 ProjectMember를 반환한다.
+    // 화면 연결 시 memberStatus(PENDING 등)를 확인하는 데 사용할 수 있다.
+    return await response.json()
+}
+
+
+/*
+ * ============================================================
+ * 8. 내가 받은 프로젝트 초대 조회 (49단계)
+ * ============================================================
+ *
+ * [함수 목적]
+ * 현재 요청 사용자에게 도착한 PENDING 초대 목록을 조회한다.
+ * 받은 초대 페이지의 UI 구현과 API 호출을 분리하기 위해
+ * 이 파일에서 HTTP 요청 및 응답 데이터 형식만 처리한다.
+ *
+ * [백엔드 계약]
+ * GET /api/projects/invitations
+ * 응답: List<ProjectMember> (JSON 배열)
+ * 주요 필드: projectId, userId, position, memberStatus 등
+ *
+ * [권한과 사용자 식별]
+ * 어떤 사용자의 초대를 조회할지는 백엔드 CurrentUserService가
+ * 결정한다. 클라이언트가 userId를 URL이나 본문으로 보내지 않는다.
+ * 기본 개발 사용자 ID는 1이며 dev 프로필에서만
+ * X-Dev-User-Id 요청 헤더를 사용할 수 있다.
+ * 이 조회 함수는 공통 개발용 헤더(getDevUserHeaders)를 함께 보낸다.
+ * 실제 사용자 선택은 dev 프로필의 백엔드 CurrentUserService가 수행한다.
+ *
+ * [주의]
+ * - 프론트엔드가 다른 사용자의 초대를 필터링하는 방식이 아니다.
+ * - 받은 초대에는 아직 ACTIVE가 아닌 PENDING 기록만 포함된다.
+ * - 이 함수는 GET 요청이므로 초대 수락/거절 등 DB 변경을 하지 않는다.
+ * - ProjectMember 응답에 프로젝트 이름이 있다는 가정은 하지 않는다.
+ * - 로그인/인증 통합 시 실제 인증 사용자를 백엔드에서 확인해야 한다.
+ *
+ * [추후 연결]
+ * 받은 초대 페이지가 마운트되면 이 함수를 호출해 목록을 출력한다.
+ * 수락/거절 처리는 별도의 POST API로 구현한다.
+ * ============================================================
+ */
+export async function getMyPendingInvitations() {
+    const response = await fetch(`${PROJECT_API_URL}/invitations`, {
+        method: 'GET',
+        headers: {
+            Accept: 'application/json',
+            ...getDevUserHeaders(),
+        },
+    })
+
+    // HTTP 4xx/5xx는 fetch 자체에서 오류로 취급하지 않으므로 검사한다.
+    if (!response.ok) {
+        throw new Error(`받은 프로젝트 초대 조회 실패 (HTTP ${response.status})`)
+    }
+
+    const invitations = await response.json()
+
+    // 백엔드 Controller는 List<ProjectMember>를 반환해야 한다.
+    if (!Array.isArray(invitations)) {
+        throw new Error('받은 프로젝트 초대 응답이 배열 형식이 아닙니다.')
+    }
+
+    return invitations
+}
+
+
+/*
+ * ============================================================
+ * 9. 받은 프로젝트 초대 수락 / 거절 (56단계)
+ * ============================================================
+ *
+ * [호출 주체 및 권한]
+ * - 현재 로그인(개발) 사용자에게 도착한 PENDING 초대만 처리한다.
+ * - 프로젝트 ID만 URL로 전달하며, 대상 사용자 ID는 전달하지 않는다.
+ * - Spring Boot CurrentUserService가 X-Dev-User-Id 헤더로 사용자를 식별한다.
+ * - 최종 권한, 초대 상태, 프로젝트 유효성 검사는 ProjectService가 수행한다.
+ *
+ * [상태 변경 — 실제 버튼 연결 전 주의]
+ * - 수락: PENDING -> ACTIVE, respondedAt / joinedAt 기록
+ * - 거절: PENDING -> REJECTED, respondedAt 기록
+ * - 둘 다 DB 상태를 변경하는 POST 요청이다.
+ * - 이 단계는 함수를 정의만 하며 자동 요청하거나 실행하지 않는다.
+ *
+ * [응답]
+ * - 백엔드 ProjectController가 ProjectMember JSON 객체를 반환한다.
+ * - UI 단계에서 호출 후 받은 초대 목록을 다시 조회해 최신 상태를 보여준다.
+ * - fetch는 HTTP 4xx/5xx에 대해 자동으로 예외를 발생시키지 않아 직접 확인한다.
+ * ============================================================
+ */
+
+// URL 경로에 사용할 프로젝트 ID를 안전하게 검증한다.
+function validateInvitationProjectId(projectId) {
+    if (projectId == null || String(projectId).trim() === '') {
+        throw new Error('프로젝트 ID를 입력해야 합니다.')
+    }
+
+    const id = Number(projectId)
+    if (!Number.isSafeInteger(id) || id <= 0) {
+        throw new Error('프로젝트 ID는 1 이상의 정수여야 합니다.')
+    }
+
+    return id
+}
+
+// 초대 수락: POST /api/projects/{projectId}/invitations/accept
+export async function acceptProjectInvitation(projectId) {
+    const id = validateInvitationProjectId(projectId)
+    const response = await fetch(`${PROJECT_API_URL}/${id}/invitations/accept`, {
+        method: 'POST',
+        headers: {
+            Accept: 'application/json',
+            ...getDevUserHeaders(),
+        },
+    })
+
+    if (!response.ok) {
+        throw new Error(`프로젝트 초대 수락 실패 (HTTP ${response.status})`)
+    }
+
+    return await response.json()
+}
+
+// 초대 거절: POST /api/projects/{projectId}/invitations/reject
+export async function rejectProjectInvitation(projectId) {
+    const id = validateInvitationProjectId(projectId)
+    const response = await fetch(`${PROJECT_API_URL}/${id}/invitations/reject`, {
+        method: 'POST',
+        headers: {
+            Accept: 'application/json',
+            ...getDevUserHeaders(),
+        },
+    })
+
+    if (!response.ok) {
+        throw new Error(`프로젝트 초대 거절 실패 (HTTP ${response.status})`)
+    }
+
+    return await response.json()
+}

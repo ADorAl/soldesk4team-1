@@ -26,8 +26,8 @@
  *
  * [팀원 인계 / TODO]
  * - 업무 관리 탭에 PROJECT_TASK API 연결
- * - 멤버 관리 탭에 PROJECT_MEMBER API 연결
- * - 프로젝트 설정 탭에 수정/삭제 API 연결
+ * - 멤버 관리 탭은 ACTIVE 멤버 목록 및 사용자 ID 기반 초대 폼 표시 (47단계)
+ * - 프로젝트 설정 탭에서 프로젝트 수정/Soft Delete API 연결
  * - 로그인 기능 통합 시 사용자 인증 방식 확인
  *
  * [주의]
@@ -37,6 +37,9 @@
  */
 import { useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
+// 53단계의 공통 개발 사용자 ID를 화면의 역할 계산에도 동일하게 적용한다.
+// API 요청용 X-Dev-User-Id와 '나'/권한 표시가 서로 다른 사용자를 가리키지 않도록 한다.
+import { getDevUserId } from '../config/devUser.js'
 // 프로젝트 상세 조회 및 ACTIVE 멤버 목록 조회 API
 // API 요청은 services/projectApi.js에 모아 관리한다.
 import {
@@ -48,8 +51,8 @@ import {
 // 내부에서 getProjectMembers()를 호출한다.
 //
 // [팀원 인계]
-// 현재는 개발용 USER_ID = 1을 기준으로 표시한다.
-// 팀원의 로그인 기능과 통합하면 실제 인증 사용자 ID로 변경해야 한다.
+// 현재 사용자 판정은 상위 컴포넌트에서 전달받는 공통 개발 사용자 ID를 기준으로 한다.
+// 실제 로그인 연동 시 개발용 설정과 인증 사용자 ID를 교체해야 한다.
 import ProjectRoleInfo from '../components/ProjectRoleInfo'
 
 
@@ -90,6 +93,20 @@ import ProjectSettingsForm from '../components/ProjectSettingsForm'
  * 실제 DELETE API 연결은 다음 단계에서 진행한다.
  */
 import ProjectDeleteSection from '../components/ProjectDeleteSection'
+
+/*
+ * [43~44단계: 프로젝트 멤버 목록 화면]
+ * 부모에서 이미 조회한 ACTIVE 멤버 데이터를 props로 전달한다.
+ * 자식 컴포넌트는 API를 다시 호출하지 않는다.
+ */
+import ProjectMemberList from '../components/ProjectMemberList'
+
+/*
+ * [47단계: 프로젝트 멤버 초대 폼]
+ * 초대 폼이 POST 요청을 담당하고, 부모는 권한과 프로젝트 ID만 전달한다.
+ * 실제 초대 성공 뒤에는 수락 대기(PENDING)이므로 ACTIVE 목록에 바로 추가하지 않는다.
+ */
+import ProjectInviteForm from '../components/ProjectInviteForm'
 
 
 // ------------------------------------------------------------
@@ -355,17 +372,17 @@ function ProjectDetailPage({ projectId, onBack }) {
      * [현재 사용자 역할 계산]
      * ============================================================
      *
-     * [현재 개발 환경]
-     * 백엔드가 기본 사용자 ID 1을 사용하는 환경에 맞춘 값.
+     * [현재 개발 환경 / 55단계]
+     * src/config/devUser.js의 개발용 사용자 ID를 읽어 온다.
+     * 54단계에서 projectApi.js도 동일한 설정으로 X-Dev-User-Id 헤더를
+     * 전달하므로, 화면의 '나' 표시와 서버 요청의 사용자 기준이 일치한다.
      *
      * [팀원 인계 / TODO]
-     * 로그인 기능을 통합할 때 currentUserId를
-     * 실제 인증된 사용자의 ID로 교체해야 한다.
-     *
-     * 이 값은 화면 표시 및 버튼 제어용이며
+     * 로그인 기능을 통합하면 getDevUserId() 대신 실제 인증된 사용자 ID를 사용하고,
+     * 개발 전용 헤더도 제거해야 한다. 이 값은 버튼과 표시용이며
      * 실제 사용자 인증이나 서버 권한 검증을 대신하지 않는다.
      */
-    const currentUserId = 1
+    const currentUserId = getDevUserId()
 
     /*
      * [현재 사용자의 ACTIVE 멤버 정보 찾기]
@@ -438,6 +455,19 @@ function ProjectDetailPage({ projectId, onBack }) {
      * 리더 양도 시 ownerId와 역할 정보가 변경될 수 있기 때문이다.
      * ============================================================
      */
+    /*
+     * [47단계: 프로젝트 멤버 초대 권한]
+     * ACTIVE LEADER/VICE_LEADER에게만 초대 입력 기능을 제공한다.
+     * 멤버 목록 조회가 완료되지 않았거나 오류가 있으면 권한을 부여하지 않는다.
+     * UI 권한 검사는 편의를 위한 것이며 실제 권한은 Spring Boot에서 재검증한다.
+     */
+    const canInviteProjectMember =
+        !membersLoading &&
+        !membersError &&
+        myMembership != null &&
+        ['LEADER', 'VICE_LEADER'].includes(myMembership.position)
+
+
     const canDeleteProject =
         !membersLoading &&
         !membersError &&
@@ -745,15 +775,55 @@ function ProjectDetailPage({ projectId, onBack }) {
                             </section>
                         )}
 
-                        {/* 멤버 관리: 추후 PROJECT_MEMBER 연결 */}
+                        {/*
+                          ============================================================
+                          [44단계: 프로젝트 멤버 관리 탭에 목록 컴포넌트 연결]
+
+                          [데이터 흐름]
+                          ProjectDetailPage의 getProjectMembers(projectId) 결과
+                            → members / membersLoading / membersError 상태
+                            → ProjectMemberList props 전달
+                            → ACTIVE 멤버 사용자 ID, 역할, 현재 사용자 표시
+
+                          [Props]
+                          members       : 서버에서 조회한 프로젝트 멤버 배열
+                          loading       : 조회 진행 중 여부
+                          error         : 조회 실패 메시지
+                          currentUserId : 현재 사용자를 '나'로 구분하기 위한 개발용 ID
+
+                          [주의 및 후속 작업]
+                          - 자식에서 API를 재호출하지 않아 중복 요청을 방지한다.
+                          - 현재 사용자 ID=1은 임시값이며 인증 연동 시 변경한다.
+                          - 초대, 역할 변경, 리더 양도, 탈퇴/제외는 이후 단계에서
+                            백엔드 권한 및 응답을 확인한 뒤 별도로 구현한다.
+                          - 멤버 목록 표시 자체는 서버 권한 검증을 대신하지 않는다.
+                          ============================================================
+                        */}
                         {activeTab === 'members' && (
-                            <section className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
-                                <h2 className="text-xl font-bold">멤버 관리</h2>
-                                <p className="mt-3 text-sm text-slate-500">
-                                    프로젝트 멤버 목록, 초대, 역할 변경,
-                                    리더 양도 및 탈퇴 기능을 연결할 예정입니다.
-                                </p>
-                            </section>
+                            /*
+                             * [47단계: 멤버 목록 + 초대 폼]
+                             * space-y-6: 두 카드 사이의 세로 간격(24px)을 설정한다.
+                             *
+                             * ProjectMemberList는 부모에서 조회한 ACTIVE 멤버 배열을 받는다.
+                             * ProjectInviteForm은 사용자 ID를 입력받아 초대 POST 요청을 보낸다.
+                             * 초대 직후 멤버 상태는 PENDING이며, 수락 전까지 목록에는 나타나지 않는다.
+                             *
+                             * 추후 초대 수락/역할 변경/탈퇴 구현 시 부모 목록을 재조회하도록
+                             * 별도 갱신 함수를 연결해야 한다. 현재는 불필요한 중복 조회를 하지 않는다.
+                             */
+                            <div className="space-y-6">
+                                <ProjectMemberList
+                                    members={members}
+                                    loading={membersLoading}
+                                    error={membersError}
+                                    currentUserId={currentUserId}
+                                />
+                                <ProjectInviteForm
+                                    projectId={projectId}
+                                    canInvite={canInviteProjectMember}
+                                    currentUserId={currentUserId}
+                                />
+                            </div>
                         )}
 
 
