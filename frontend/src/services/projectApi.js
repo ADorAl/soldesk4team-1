@@ -11,8 +11,10 @@ import { getDevUserHeaders } from '../config/devUser.js'
  * TeamPlace의 PROJECT 관련 Spring Boot API 요청을 관리한다.
  *
  * [현재 구현 기능]
- * 1. getMyProjects() : 프로젝트 목록 조회
- * 2. createProject() : 프로젝트 생성
+ * - 프로젝트 CRUD 및 멤버 조회
+ * - 멤버 초대, 받은 초대 조회, 수락/거절
+ * - 멤버 역할 변경, 리더 양도
+ * - 프로젝트 자진 탈퇴(72단계 API 함수 추가)
  *
  * [관련 백엔드]
  * - ProjectController.java
@@ -25,11 +27,6 @@ import { getDevUserHeaders } from '../config/devUser.js'
  * - 화면 구성과 Tailwind CSS는 pages 컴포넌트에서 관리한다.
  * - 인증 기능이 통합되면 요청 인증 방식을 함께 변경한다.
  * - Vite Proxy가 /api 요청을 Spring Boot로 전달한다.
- *
- * TODO:
- * - 프로젝트 상세 조회
- * - 프로젝트 수정
- * - 프로젝트 삭제
  *
  * 주의:
  * X-Dev-User-Id는 개발 테스트용이며 실제 인증이 아니다.
@@ -1032,6 +1029,263 @@ export async function rejectProjectInvitation(projectId) {
 
     if (!response.ok) {
         throw new Error(`프로젝트 초대 거절 실패 (HTTP ${response.status})`)
+    }
+
+    return await response.json()
+}
+
+
+/*
+ * ============================================================
+ * 10. 프로젝트 멤버 역할 변경 (63단계)
+ * ============================================================
+ *
+ * [목적]
+ * 프로젝트의 ACTIVE LEADER가 다른 ACTIVE 멤버의 역할을
+ * MEMBER <-> VICE_LEADER 사이에서 변경할 때 사용할 API 함수다.
+ * 이번 단계는 API 함수 준비만 하며 실제 PUT 요청은 호출 시에만 발생한다.
+ *
+ * [백엔드 계약]
+ * PUT /api/projects/{projectId}/members/{userId}/role
+ * Content-Type: application/json
+ * 본문: { "position": "MEMBER" } 또는 { "position": "VICE_LEADER" }
+ * 응답: 변경된 ProjectMember JSON 객체
+ *
+ * [권한과 역할 구분]
+ * - 요청자: 해당 프로젝트의 ACTIVE LEADER만 가능
+ * - 대상자: 해당 프로젝트의 ACTIVE 멤버만 가능
+ * - LEADER 역할 자체는 이 API로 변경할 수 없다.
+ * - 리더 양도는 별도 엔드포인트에서 처리한다.
+ * - 클라이언트 검증은 잘못된 요청을 줄이기 위한 것으로,
+ *   실제 권한과 멤버 상태는 Spring Boot ProjectService가 검사한다.
+ *
+ * [개발 환경]
+ * - getDevUserHeaders()는 53단계의 공통 devUser 설정을 사용한다.
+ * - X-Dev-User-Id는 백엔드 dev 프로필 테스트 전용이다.
+ * - 실제 인증 연동 시 공통 API 인증 정책에 맞게 전환해야 한다.
+ *
+ * [후속 UI 연결]
+ * - 멤버 관리 UI에서 리더가 역할 변경을 확정할 때만 호출한다.
+ * - 성공 후 부모의 members를 다시 조회하여 역할 표시와 권한 UI를 갱신한다.
+ * ============================================================
+ */
+export async function updateProjectMemberRole(projectId, targetUserId, newPosition) {
+    // URL에 들어갈 두 ID는 안전한 양의 정수인지 확인한다.
+    // Number(null), Number('')가 0이 되는 상황도 명시적으로 차단한다.
+    const validatePositiveId = (value, label) => {
+        if (value == null || String(value).trim() === '') {
+            throw new Error(`${label}를 입력해야 합니다.`)
+        }
+        const id = Number(value)
+        if (!Number.isSafeInteger(id) || id <= 0) {
+            throw new Error(`${label}는 1 이상의 정수여야 합니다.`)
+        }
+        return id
+    }
+
+    const id = validatePositiveId(projectId, '프로젝트 ID')
+    const userId = validatePositiveId(targetUserId, '대상 사용자 ID')
+
+    // 일반 역할 변경은 MEMBER와 VICE_LEADER만 지원한다.
+    // LEADER 양도는 별도의 요청으로 처리해야 한다.
+    if (newPosition !== 'MEMBER' && newPosition !== 'VICE_LEADER') {
+        throw new Error('변경할 역할은 MEMBER 또는 VICE_LEADER여야 합니다.')
+    }
+
+    const response = await fetch(`${PROJECT_API_URL}/${id}/members/${userId}/role`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            ...getDevUserHeaders(),
+        },
+        body: JSON.stringify({ position: newPosition }),
+    })
+
+    // fetch는 4xx/5xx에도 자동으로 throw하지 않으므로 상태를 검사한다.
+    if (!response.ok) {
+        throw new Error(`프로젝트 멤버 역할 변경 실패 (HTTP ${response.status})`)
+    }
+
+    // Controller가 업데이트된 ProjectMember 객체를 반환한다.
+    return await response.json()
+}
+
+
+/*
+ * ============================================================
+ * 11. 프로젝트 리더 양도 (67단계)
+ * ============================================================
+ *
+ * [목적]
+ * 현재 프로젝트의 ACTIVE LEADER가 다른 ACTIVE 멤버에게
+ * LEADER 역할을 넘길 때 사용할 요청 함수다.
+ *
+ * [Spring Boot API]
+ * POST /api/projects/{projectId}/leader/{userId}
+ * - 별도의 JSON 요청 본문은 사용하지 않는다.
+ * - 성공 시 새 리더의 ProjectMember 객체를 JSON으로 반환한다.
+ *
+ * [백엔드에서 수행되는 주요 검증 및 변경]
+ * - 요청자가 프로젝트의 ACTIVE LEADER인지 확인한다.
+ * - 대상자가 다른 ACTIVE 멤버인지 확인한다.
+ * - DELETED 프로젝트에서는 양도하지 못한다.
+ * - 기존 리더의 position을 MEMBER로 변경한다.
+ * - 대상 멤버의 position을 LEADER로 변경한다.
+ * - PROJECT.owner_id도 새 리더의 userId로 변경한다.
+ * - 변경들은 @Transactional로 묶여 있다.
+ *
+ * [주의]
+ * - getDevUserHeaders()는 Spring Boot dev 프로필에서만 사용하는
+ *   X-Dev-User-Id 헤더를 추가한다. 실제 로그인 인증이 아니다.
+ * - 이 함수는 호출하는 순간 실제 DB 변경을 요청한다.
+ *   이번 67단계에서는 함수를 추가만 하고 호출하지 않는다.
+ * - 후속 화면에서는 명시적인 최종 확인 후 호출하고,
+ *   성공 시 프로젝트 및 멤버 목록을 모두 다시 조회해야 한다.
+ * ============================================================
+ */
+export async function transferProjectLeader(projectId, targetUserId) {
+    // null, 빈 문자열, 소수, 음수, 안전 정수 범위를 벗어난 ID를 차단한다.
+    const validateId = (value, label) => {
+        if (value == null || String(value).trim() === '') {
+            throw new Error(`${label}를 입력해야 합니다.`)
+        }
+
+        const parsed = Number(value)
+        if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+            throw new Error(`${label}는 1 이상의 정수여야 합니다.`)
+        }
+        return parsed
+    }
+
+    const id = validateId(projectId, '프로젝트 ID')
+    const userId = validateId(targetUserId, '새 리더 사용자 ID')
+
+    // 프론트에서 잘못된 요청을 예방하지만, 실제 권한 검증은 백엔드가 수행한다.
+    const response = await fetch(`${PROJECT_API_URL}/${id}/leader/${userId}`, {
+        method: 'POST',
+        headers: {
+            Accept: 'application/json',
+            ...getDevUserHeaders(),
+        },
+    })
+
+    // fetch는 HTTP 4xx/5xx 응답을 자동 예외 처리하지 않는다.
+    if (!response.ok) {
+        throw new Error(`프로젝트 리더 양도 실패 (HTTP ${response.status})`)
+    }
+
+    return await response.json()
+}
+
+
+/*
+ * ============================================================
+ * 72단계: 프로젝트 자진 탈퇴 API
+ * ============================================================
+ *
+ * [요청]
+ * POST /api/projects/{projectId}/leave
+ * - 현재 요청 사용자 자신이 프로젝트에서 나간다.
+ * - 별도의 JSON 요청 본문은 보내지 않는다.
+ * - 성공 시 변경된 ProjectMember 데이터를 JSON으로 받는다.
+ *
+ * [백엔드 ProjectService.leaveProject()의 정책]
+ * - 해당 프로젝트에서 현재 사용자가 ACTIVE 멤버여야 한다.
+ * - MEMBER와 VICE_LEADER만 자진 탈퇴할 수 있다.
+ * - LEADER는 다른 ACTIVE 멤버에게 리더를 양도한 뒤 탈퇴할 수 있다.
+ * - PROJECT가 DELETED 상태이면 탈퇴를 차단한다.
+ * - 실제 행 삭제 대신 position=MEMBER, memberStatus=LEFT로 변경한다.
+ *
+ * [개발 사용자 테스트 주의]
+ * - getDevUserHeaders()는 dev 프로필에서 테스트용 사용자 헤더를 보낸다.
+ * - 이 API는 호출 시 DB에 변경이 발생한다. 72단계에서는 함수만 추가하며
+ *   브라우저 버튼/화면 연결과 실제 탈퇴 테스트는 다음 단계로 미룬다.
+ * - 성공 후 호출 화면은 프로젝트 목록 등으로 이동하거나 목록을 재조회해야 한다.
+ * - 실제 로그인 기능 연동 후에는 개발 사용자 헤더 방식을 제거해야 한다.
+ * ============================================================
+ */
+export async function leaveProject(projectId) {
+    // 숫자 변환 과정에서 빈 문자열이 0이 되는 사례 등을 막는다.
+    if (projectId == null || String(projectId).trim() === '') {
+        throw new Error('프로젝트 ID를 입력해야 합니다.')
+    }
+
+    const id = Number(projectId)
+    if (!Number.isSafeInteger(id) || id <= 0) {
+        throw new Error('프로젝트 ID는 1 이상의 정수여야 합니다.')
+    }
+
+    const response = await fetch(`${PROJECT_API_URL}/${id}/leave`, {
+        method: 'POST',
+        headers: {
+            Accept: 'application/json',
+            ...getDevUserHeaders(),
+        },
+    })
+
+    // fetch는 4xx/5xx에서 자동으로 예외를 던지지 않으므로 명시적으로 검사한다.
+    if (!response.ok) {
+        throw new Error(`프로젝트 탈퇴 실패 (HTTP ${response.status})`)
+    }
+
+    return await response.json()
+}
+
+
+/*
+ * ============================================================
+ * 76단계: 프로젝트 멤버 강제 제외 API
+ * ============================================================
+ *
+ * [요청]
+ * POST /api/projects/{projectId}/members/{userId}/remove
+ * - 현재 프로젝트의 LEADER가 다른 ACTIVE 멤버를 제외한다.
+ * - 요청 본문은 필요하지 않으며, 성공 시 변경된 ProjectMember JSON을 반환한다.
+ *
+ * [백엔드 ProjectService.removeMember() 정책]
+ * - 요청자는 해당 프로젝트에서 ACTIVE LEADER여야 한다.
+ * - 제외 대상은 다른 ACTIVE MEMBER 또는 VICE_LEADER여야 한다.
+ * - 리더 자신 및 이미 탈퇴/거절/대기 중인 멤버는 제외할 수 없다.
+ * - 삭제된 프로젝트에서 제외할 수 없다.
+ * - 대상의 position은 MEMBER, memberStatus는 LEFT로 변경된다.
+ * - 자진 탈퇴도 LEFT를 사용하므로 DB 상태만으로 두 기능은 구분하지 않는다.
+ *
+ * [개발/연동 주의]
+ * - getDevUserHeaders()는 개발용 X-Dev-User-Id 헤더를 추가한다.
+ * - 프론트 버튼 노출과 실제 권한 검사는 별개이며 최종 검사는 Spring Boot가 수행한다.
+ * - 이 함수가 호출되면 실제 DB가 변경된다. 76단계에서는 추가만 한다.
+ * - 화면 연결 후 성공 시 멤버 목록과 현재 역할 정보를 다시 조회한다.
+ * ============================================================
+ */
+export async function removeProjectMember(projectId, targetUserId) {
+    // Number('')는 0이 될 수 있으므로 빈 값부터 명시적으로 막는다.
+    const validateId = (value, label) => {
+        if (value == null || String(value).trim() === '') {
+            throw new Error(`${label}를 입력해야 합니다.`)
+        }
+
+        const id = Number(value)
+        if (!Number.isSafeInteger(id) || id <= 0) {
+            throw new Error(`${label}는 1 이상의 정수여야 합니다.`)
+        }
+        return id
+    }
+
+    const id = validateId(projectId, '프로젝트 ID')
+    const userId = validateId(targetUserId, '제외 대상 사용자 ID')
+
+    const response = await fetch(`${PROJECT_API_URL}/${id}/members/${userId}/remove`, {
+        method: 'POST',
+        headers: {
+            Accept: 'application/json',
+            ...getDevUserHeaders(),
+        },
+    })
+
+    // fetch는 HTTP 오류 응답(4xx/5xx)만으로 예외를 발생시키지 않는다.
+    if (!response.ok) {
+        throw new Error(`프로젝트 멤버 제외 실패 (HTTP ${response.status})`)
     }
 
     return await response.json()
