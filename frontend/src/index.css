@@ -1,0 +1,23 @@
+
+/* Tailwind CSS v4 불러오기 */
+@import "tailwindcss";
+
+/*
+ * TeamPlace 전역 기본 스타일
+ * 화면 전체를 사용할 수 있도록 기본 여백을 제거한다.
+ */
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+/*
+ * 기본 글꼴 설정
+ * Tailwind의 유틸리티 클래스로 세부 디자인을 적용한다.
+ */
+body {
+  font-family: Arial, "Malgun Gothic", sans-serif;
+}

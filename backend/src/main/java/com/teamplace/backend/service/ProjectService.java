@@ -13,6 +13,8 @@ import java.time.LocalDateTime;
 
 import java.util.List;
 
+import java.util.Optional;
+
 /*
  * 프로젝트 관련 핵심 비즈니스 로직을 담당하는 Service.
  *
@@ -901,20 +903,85 @@ public class ProjectService {
                 }
 
                 /*
+                 * 초대 대상 사용자가 실제 USERS 테이블에 존재하는지 확인한다.
+                 *
+                 * 존재하지 않는 userId를 그대로 PROJECT_MEMBER에 저장하려 하면
+                 * DB의 FK 제약조건에서 오류가 발생할 수 있다.
+                 *
+                 * 그래서 DB INSERT 전에 Service 계층에서 먼저 확인해서
+                 * 의미 있는 400 오류로 차단한다.
+                 */
+                userRepository.findById(targetUserId)
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "존재하지 않는 사용자입니다."));
+
+                /*
                  * 같은 프로젝트 + 같은 사용자의
                  * PROJECT_MEMBER 행이 이미 있는지 확인한다.
                  *
                  * DB에 UNIQUE(project_id, user_id) 제약이 있기 때문에
                  * 기존 행이 있다면 새 INSERT를 수행하면 안 된다.
                  */
-                if (projectMemberRepository
-                                .findByProjectIdAndUserId(
-                                                projectId,
-                                                targetUserId)
-                                .isPresent()) {
+                /*
+                 * 같은 프로젝트 + 같은 사용자의 기존 PROJECT_MEMBER 행이 있는지 확인한다.
+                 *
+                 * DB에는 UNIQUE(project_id, user_id) 제약이 있으므로
+                 * 기존 행이 있으면 새 INSERT를 하면 안 된다.
+                 */
+                Optional<ProjectMember> existingMember = projectMemberRepository.findByProjectIdAndUserId(
+                                projectId,
+                                targetUserId);
 
-                        throw new IllegalArgumentException(
-                                        "이미 초대 또는 참여 이력이 있는 사용자입니다.");
+                /*
+                 * 기존 행이 있다면 현재 상태에 따라 처리한다.
+                 *
+                 * PENDING
+                 * → 이미 초대 대기 중이므로 재초대 불가
+                 *
+                 * ACTIVE
+                 * → 이미 프로젝트 참여 중이므로 재초대 불가
+                 *
+                 * REJECTED / LEFT
+                 * → 기존 행을 재사용해서 다시 PENDING 초대로 변경
+                 */
+                if (existingMember.isPresent()) {
+
+                        ProjectMember member = existingMember.get();
+
+                        if ("PENDING".equals(member.getMemberStatus())) {
+                                throw new IllegalArgumentException(
+                                                "이미 초대 대기 중인 사용자입니다.");
+                        }
+
+                        if ("ACTIVE".equals(member.getMemberStatus())) {
+                                throw new IllegalArgumentException(
+                                                "이미 프로젝트에 참여 중인 사용자입니다.");
+                        }
+
+                        if ("REJECTED".equals(member.getMemberStatus())
+                                        || "LEFT".equals(member.getMemberStatus())) {
+
+                                /*
+                                 * 기존 행을 재사용해서 다시 초대 상태로 만든다.
+                                 */
+                                member.setPosition("MEMBER");
+                                member.setMemberStatus("PENDING");
+                                member.setInvitedBy(currentUserId);
+
+                                /*
+                                 * 재초대한 시점을 새 초대 시간으로 기록한다.
+                                 */
+                                member.setInvitedAt(LocalDateTime.now());
+
+                                /*
+                                 * 이전 응답/참여 기록은
+                                 * 새 초대가 되었으므로 비워둔다.
+                                 */
+                                member.setRespondedAt(null);
+                                member.setJoinedAt(null);
+
+                                return projectMemberRepository.save(member);
+                        }
                 }
 
                 /*
@@ -929,6 +996,7 @@ public class ProjectService {
                 invitation.setUserId(targetUserId);
                 invitation.setPosition("MEMBER");
                 invitation.setMemberStatus("PENDING");
+                invitation.setInvitedBy(currentUserId);
 
                 /*
                  * 누가 초대했는지 기록한다.
@@ -943,5 +1011,624 @@ public class ProjectService {
                  * DB의 SYSTIMESTAMP 기본값을 사용한다.
                  */
                 return projectMemberRepository.save(invitation);
+        }
+
+        /*
+         * 현재 사용자가 받은 PENDING 프로젝트 초대 목록을 조회한다.
+         *
+         * 현재 사용자 ID는 직접 1L, 2L로 작성하지 않고
+         * CurrentUserService에서 가져온다.
+         *
+         * 데이터 흐름:
+         *
+         * Controller
+         * ↓
+         * ProjectService.getMyPendingInvitations()
+         * ↓
+         * CurrentUserService
+         * ↓
+         * 현재 USER_ID
+         * ↓
+         * ProjectMemberRepository
+         * ↓
+         * user_id = 현재 사용자
+         * member_status = PENDING
+         * ↓
+         * 받은 초대 목록 반환
+         */
+        @Transactional(readOnly = true)
+        public List<ProjectMember> getMyPendingInvitations() {
+
+                /*
+                 * 현재 요청을 수행하는 사용자를 확인한다.
+                 *
+                 * 이후 실제 로그인 기능이 연결되더라도
+                 * 이 Service 코드는 그대로 사용할 수 있다.
+                 */
+                Long currentUserId = currentUserService.getCurrentUserId();
+
+                /*
+                 * 현재 사용자가 아직 수락하거나 거절하지 않은
+                 * PENDING 초대만 조회한다.
+                 */
+                return projectMemberRepository
+                                .findByUserIdAndMemberStatus(
+                                                currentUserId,
+                                                "PENDING");
+        }
+
+        /*
+         * 현재 사용자가 받은 PENDING 초대를 수락한다.
+         *
+         * 수락하면:
+         *
+         * member_status = ACTIVE
+         * responded_at = 현재 시간
+         * joined_at = 현재 시간
+         *
+         * 로 변경한다.
+         *
+         * 현재 사용자 본인에게 온 초대만 수락할 수 있다.
+         */
+        @Transactional
+        public ProjectMember acceptInvitation(Long projectId) {
+
+                Long currentUserId = currentUserService.getCurrentUserId();
+
+                /*
+                 * 현재 사용자가 해당 프로젝트에서
+                 * PENDING 상태로 받은 초대가 있는지 확인한다.
+                 *
+                 * 다른 사람의 초대를 대신 수락할 수 없도록
+                 * currentUserId까지 함께 조건에 사용한다.
+                 */
+                ProjectMember invitation = projectMemberRepository
+                                .findByProjectIdAndUserIdAndMemberStatus(
+                                                projectId,
+                                                currentUserId,
+                                                "PENDING")
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "수락할 수 있는 초대가 없습니다."));
+
+                LocalDateTime now = LocalDateTime.now();
+
+                /*
+                 * 초대를 수락했으므로
+                 * 프로젝트의 실제 참여 멤버 상태로 변경한다.
+                 */
+                invitation.setMemberStatus("ACTIVE");
+
+                /*
+                 * 응답한 시각과 실제 참여 시작 시각을 기록한다.
+                 */
+                invitation.setRespondedAt(now);
+                invitation.setJoinedAt(now);
+
+                return projectMemberRepository.save(invitation);
+        }
+
+        /*
+         * 현재 사용자가 받은 PENDING 초대를 거절한다.
+         *
+         * 거절하면:
+         *
+         * member_status = REJECTED
+         * responded_at = 현재 시간
+         *
+         * 으로 변경한다.
+         *
+         * joined_at은 프로젝트에 참여한 적이 없으므로
+         * NULL 상태를 유지한다.
+         */
+        @Transactional
+        public ProjectMember rejectInvitation(Long projectId) {
+
+                Long currentUserId = currentUserService.getCurrentUserId();
+
+                /*
+                 * 현재 사용자가 해당 프로젝트에서
+                 * 실제로 PENDING 상태의 초대를 받은 적이 있는지 확인한다.
+                 *
+                 * 다른 사람의 초대를 대신 거절할 수 없도록
+                 * projectId + currentUserId + PENDING 조건으로 조회한다.
+                 */
+                ProjectMember invitation = projectMemberRepository
+                                .findByProjectIdAndUserIdAndMemberStatus(
+                                                projectId,
+                                                currentUserId,
+                                                "PENDING")
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "거절할 수 있는 초대가 없습니다."));
+
+                /*
+                 * 초대를 거절했으므로 상태를 REJECTED로 변경한다.
+                 */
+                invitation.setMemberStatus("REJECTED");
+
+                /*
+                 * 사용자가 초대에 응답한 시각을 기록한다.
+                 *
+                 * 거절이므로 joinedAt은 설정하지 않는다.
+                 */
+                invitation.setRespondedAt(LocalDateTime.now());
+
+                return projectMemberRepository.save(invitation);
+        }
+
+        /*
+         * 특정 프로젝트의 ACTIVE 멤버 목록을 조회한다.
+         *
+         * 아무 사용자나 프로젝트 멤버 목록을 볼 수 있게 하지 않고,
+         * 현재 사용자가 해당 프로젝트의 ACTIVE 멤버인지 먼저 확인한다.
+         *
+         * 즉:
+         *
+         * 현재 사용자 ACTIVE 멤버
+         * → 멤버 목록 조회 가능
+         *
+         * 현재 사용자 비멤버 / PENDING / REJECTED / LEFT
+         * → 조회 불가
+         *
+         *
+         * 데이터 흐름:
+         *
+         * Controller
+         * ↓
+         * ProjectService.getActiveProjectMembers()
+         * ↓
+         * CurrentUserService
+         * ↓
+         * 현재 USER_ID
+         * ↓
+         * 현재 사용자의 PROJECT_MEMBER 확인
+         * ↓
+         * ACTIVE이면
+         * ↓
+         * 해당 프로젝트의 ACTIVE 멤버 전체 조회
+         */
+        @Transactional(readOnly = true)
+        public List<ProjectMember> getActiveProjectMembers(Long projectId) {
+
+                Long currentUserId = currentUserService.getCurrentUserId();
+
+                /*
+                 * 프로젝트가 실제로 존재하는지 확인한다.
+                 */
+                Project project = projectRepository.findById(projectId)
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "존재하지 않는 프로젝트입니다."));
+
+                /*
+                 * 삭제된 프로젝트는 기존 정책대로
+                 * 일반 사용자 기능에서 접근할 수 없게 한다.
+                 */
+                if ("DELETED".equals(project.getStatus())) {
+                        throw new IllegalArgumentException(
+                                        "삭제된 프로젝트입니다.");
+                }
+
+                /*
+                 * 현재 사용자가 이 프로젝트의 ACTIVE 멤버인지 확인한다.
+                 *
+                 * 여기서는 position이 LEADER인지 MEMBER인지가 중요하지 않다.
+                 * ACTIVE 멤버라면 프로젝트 구성원 목록을 볼 수 있게 한다.
+                 */
+                projectMemberRepository
+                                .findByProjectIdAndUserIdAndMemberStatus(
+                                                projectId,
+                                                currentUserId,
+                                                "ACTIVE")
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "프로젝트 멤버 조회 권한이 없습니다."));
+
+                /*
+                 * 권한 확인이 끝났으면
+                 * 현재 프로젝트의 ACTIVE 멤버 전체를 반환한다.
+                 */
+                return projectMemberRepository
+                                .findByProjectIdAndMemberStatus(
+                                                projectId,
+                                                "ACTIVE");
+        }
+
+        /*
+         * 프로젝트 멤버의 일반 역할을 변경한다.
+         *
+         * 권한 정책:
+         *
+         * LEADER
+         * → 역할 변경 가능
+         *
+         * VICE_LEADER / MEMBER
+         * → 역할 변경 불가
+         *
+         *
+         * 변경 가능한 역할:
+         *
+         * MEMBER <-> VICE_LEADER
+         *
+         * LEADER 변경은 여기서 처리하지 않는다.
+         * LEADER 양도는 별도 기능으로 구현한다.
+         */
+        @Transactional
+        public ProjectMember updateMemberRole(
+                        Long projectId,
+                        Long targetUserId,
+                        String newPosition) {
+
+                Long currentUserId = currentUserService.getCurrentUserId();
+
+                /*
+                 * 요청으로 들어온 역할값을 먼저 검증한다.
+                 *
+                 * 이번 일반 역할 변경 API에서는
+                 * MEMBER와 VICE_LEADER만 허용한다.
+                 *
+                 * LEADER는 별도 리더 양도 기능에서 처리한다.
+                 */
+                if (!"MEMBER".equals(newPosition)
+                                && !"VICE_LEADER".equals(newPosition)) {
+
+                        throw new IllegalArgumentException(
+                                        "변경 가능한 역할은 MEMBER 또는 VICE_LEADER입니다.");
+                }
+
+                /*
+                 * 프로젝트 존재 여부를 확인한다.
+                 */
+                Project project = projectRepository.findById(projectId)
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "존재하지 않는 프로젝트입니다."));
+
+                /*
+                 * 삭제된 프로젝트는 기존 정책대로
+                 * 멤버 관리 기능도 사용할 수 없다.
+                 */
+                if ("DELETED".equals(project.getStatus())) {
+                        throw new IllegalArgumentException(
+                                        "삭제된 프로젝트의 멤버 역할은 변경할 수 없습니다.");
+                }
+
+                /*
+                 * 현재 사용자가 해당 프로젝트의
+                 * ACTIVE 멤버인지 확인한다.
+                 */
+                ProjectMember currentMember = projectMemberRepository
+                                .findByProjectIdAndUserIdAndMemberStatus(
+                                                projectId,
+                                                currentUserId,
+                                                "ACTIVE")
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "프로젝트 멤버 역할 변경 권한이 없습니다."));
+
+                /*
+                 * 역할 변경 권한은 LEADER에게만 있다.
+                 */
+                if (!"LEADER".equals(currentMember.getPosition())) {
+                        throw new IllegalArgumentException(
+                                        "LEADER만 프로젝트 멤버의 역할을 변경할 수 있습니다.");
+                }
+
+                /*
+                 * 역할을 변경할 대상도 현재 프로젝트의
+                 * ACTIVE 멤버여야 한다.
+                 */
+                ProjectMember targetMember = projectMemberRepository
+                                .findByProjectIdAndUserIdAndMemberStatus(
+                                                projectId,
+                                                targetUserId,
+                                                "ACTIVE")
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "역할을 변경할 수 있는 ACTIVE 멤버가 아닙니다."));
+
+                /*
+                 * 현재 LEADER의 역할을 이 API에서 변경하면
+                 * 프로젝트에 LEADER가 없어질 수 있다.
+                 *
+                 * 따라서 LEADER 대상은 일반 역할 변경에서 차단하고,
+                 * 나중에 별도의 LEADER 양도 기능으로 처리한다.
+                 */
+                if ("LEADER".equals(targetMember.getPosition())) {
+                        throw new IllegalArgumentException(
+                                        "LEADER 역할 변경은 리더 양도 기능을 이용해야 합니다.");
+                }
+
+                /*
+                 * 모든 권한/상태 검증이 끝났으므로
+                 * MEMBER 또는 VICE_LEADER로 역할을 변경한다.
+                 */
+                targetMember.setPosition(newPosition);
+
+                return projectMemberRepository.save(targetMember);
+        }
+
+        /*
+         * 현재 LEADER가 다른 ACTIVE 멤버에게
+         * 프로젝트 LEADER 역할을 양도한다.
+         *
+         * 양도 성공 시:
+         *
+         * 기존 LEADER
+         * → MEMBER
+         *
+         * 대상 멤버
+         * → LEADER
+         *
+         * PROJECT.owner_id
+         * → 새 LEADER의 userId
+         *
+         *
+         * LEADER 양도는 여러 DB 변경이 함께 일어나므로
+         * 하나라도 실패하면 전체가 취소되도록 @Transactional로 묶는다.
+         */
+        @Transactional
+        public ProjectMember transferLeader(
+                        Long projectId,
+                        Long targetUserId) {
+
+                Long currentUserId = currentUserService.getCurrentUserId();
+
+                /*
+                 * 자기 자신에게 LEADER를 양도할 필요는 없다.
+                 */
+                if (currentUserId.equals(targetUserId)) {
+                        throw new IllegalArgumentException(
+                                        "자기 자신에게 리더를 양도할 수 없습니다.");
+                }
+
+                /*
+                 * 프로젝트 존재 여부를 확인한다.
+                 */
+                Project project = projectRepository.findById(projectId)
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "존재하지 않는 프로젝트입니다."));
+
+                /*
+                 * 삭제된 프로젝트에서는 LEADER 양도를 할 수 없다.
+                 */
+                if ("DELETED".equals(project.getStatus())) {
+                        throw new IllegalArgumentException(
+                                        "삭제된 프로젝트에서는 리더를 양도할 수 없습니다.");
+                }
+
+                /*
+                 * 현재 사용자가 이 프로젝트에서
+                 * ACTIVE 상태인지 확인한다.
+                 */
+                ProjectMember currentLeader = projectMemberRepository
+                                .findByProjectIdAndUserIdAndMemberStatus(
+                                                projectId,
+                                                currentUserId,
+                                                "ACTIVE")
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "리더 양도 권한이 없습니다."));
+
+                /*
+                 * 실제 LEADER만 양도할 수 있다.
+                 */
+                if (!"LEADER".equals(currentLeader.getPosition())) {
+                        throw new IllegalArgumentException(
+                                        "LEADER만 리더를 양도할 수 있습니다.");
+                }
+
+                /*
+                 * 새 LEADER가 될 사용자도
+                 * 현재 프로젝트의 ACTIVE 멤버여야 한다.
+                 */
+                ProjectMember newLeader = projectMemberRepository
+                                .findByProjectIdAndUserIdAndMemberStatus(
+                                                projectId,
+                                                targetUserId,
+                                                "ACTIVE")
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "리더를 양도할 수 있는 ACTIVE 멤버가 아닙니다."));
+
+                /*
+                 * DB에는 프로젝트별 ACTIVE LEADER가
+                 * 최대 1명만 존재할 수 있다.
+                 *
+                 * 따라서 기존 LEADER를 먼저 MEMBER로 내린 뒤
+                 * DB에 즉시 반영한다.
+                 *
+                 * 이후 대상 멤버를 LEADER로 올린다.
+                 */
+                currentLeader.setPosition("MEMBER");
+
+                projectMemberRepository.saveAndFlush(currentLeader);
+
+                /*
+                 * 새 리더를 지정한다.
+                 */
+                newLeader.setPosition("LEADER");
+
+                ProjectMember savedNewLeader = projectMemberRepository.save(newLeader);
+
+                /*
+                 * PROJECT.owner_id도 실제 LEADER와 일치하도록
+                 * 새 리더의 userId로 변경한다.
+                 */
+                project.setOwnerId(targetUserId);
+
+                projectRepository.save(project);
+
+                return savedNewLeader;
+        }
+
+        /*
+         * 현재 사용자가 프로젝트에서 스스로 나간다.
+         *
+         * MEMBER / VICE_LEADER
+         * → 나가기 가능
+         *
+         * LEADER
+         * → 바로 나갈 수 없음
+         * → 먼저 다른 ACTIVE 멤버에게 LEADER를 양도해야 한다.
+         *
+         * 실제 PROJECT_MEMBER 행을 DELETE하지 않고
+         * member_status를 LEFT로 변경하여 참여 이력을 남긴다.
+         */
+        @Transactional
+        public ProjectMember leaveProject(Long projectId) {
+
+                Long currentUserId = currentUserService.getCurrentUserId();
+
+                /*
+                 * 프로젝트가 실제로 존재하는지 확인한다.
+                 */
+                Project project = projectRepository.findById(projectId)
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "존재하지 않는 프로젝트입니다."));
+
+                /*
+                 * 삭제된 프로젝트에서는 일반 멤버 기능을 사용할 수 없다.
+                 */
+                if ("DELETED".equals(project.getStatus())) {
+                        throw new IllegalArgumentException(
+                                        "삭제된 프로젝트에서는 나갈 수 없습니다.");
+                }
+
+                /*
+                 * 현재 사용자가 실제로 이 프로젝트의
+                 * ACTIVE 멤버인지 확인한다.
+                 */
+                ProjectMember currentMember = projectMemberRepository
+                                .findByProjectIdAndUserIdAndMemberStatus(
+                                                projectId,
+                                                currentUserId,
+                                                "ACTIVE")
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "현재 참여 중인 프로젝트가 아닙니다."));
+
+                /*
+                 * LEADER가 바로 나가면 프로젝트에
+                 * 리더가 없어질 수 있으므로 차단한다.
+                 *
+                 * 먼저 transferLeader()를 통해
+                 * 다른 ACTIVE 멤버에게 리더를 양도해야 한다.
+                 */
+                if ("LEADER".equals(currentMember.getPosition())) {
+                        throw new IllegalArgumentException(
+                                        "LEADER는 먼저 다른 멤버에게 리더를 양도해야 합니다.");
+                }
+
+                /*
+                 * 프로젝트에서 나간 사용자는
+                 * 더 이상 관리 역할을 가지지 않도록 MEMBER로 정리한다.
+                 */
+                currentMember.setPosition("MEMBER");
+
+                /*
+                 * 실제 DB 행은 삭제하지 않고
+                 * 참여 상태만 LEFT로 변경한다.
+                 */
+                currentMember.setMemberStatus("LEFT");
+
+                return projectMemberRepository.save(currentMember);
+        }
+
+        /*
+         * LEADER가 다른 ACTIVE 멤버를 프로젝트에서 강제로 제외한다.
+         *
+         * 권한 정책:
+         *
+         * LEADER
+         * → MEMBER / VICE_LEADER 강제 제외 가능
+         *
+         * VICE_LEADER / MEMBER
+         * → 강제 제외 불가
+         *
+         * LEADER 자신
+         * → 강제 제외 불가
+         *
+         *
+         * DB 구조는 변경하지 않고
+         * 자진 탈퇴와 강제 제외 모두 member_status = LEFT를 사용한다.
+         *
+         * 따라서 DB만 보면 둘을 구분할 수 없지만,
+         * API와 화면 메시지는 각각 다르게 처리할 수 있다.
+         */
+        @Transactional
+        public ProjectMember removeMember(
+                        Long projectId,
+                        Long targetUserId) {
+
+                Long currentUserId = currentUserService.getCurrentUserId();
+
+                /*
+                 * 자기 자신을 강제 제외하는 요청은 막는다.
+                 *
+                 * LEADER가 프로젝트에서 나가려면
+                 * 리더 양도 후 leaveProject()를 사용해야 한다.
+                 */
+                if (currentUserId.equals(targetUserId)) {
+                        throw new IllegalArgumentException(
+                                        "자기 자신을 프로젝트에서 강제 제외할 수 없습니다.");
+                }
+
+                /*
+                 * 프로젝트 존재 여부 확인.
+                 */
+                Project project = projectRepository.findById(projectId)
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "존재하지 않는 프로젝트입니다."));
+
+                /*
+                 * 삭제된 프로젝트에서는 멤버 관리 기능을 사용할 수 없다.
+                 */
+                if ("DELETED".equals(project.getStatus())) {
+                        throw new IllegalArgumentException(
+                                        "삭제된 프로젝트에서는 멤버를 제외할 수 없습니다.");
+                }
+
+                /*
+                 * 현재 사용자가 이 프로젝트의 ACTIVE 멤버인지 확인한다.
+                 */
+                ProjectMember currentMember = projectMemberRepository
+                                .findByProjectIdAndUserIdAndMemberStatus(
+                                                projectId,
+                                                currentUserId,
+                                                "ACTIVE")
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "프로젝트 멤버 제외 권한이 없습니다."));
+
+                /*
+                 * 강제 제외 권한은 LEADER만 가진다.
+                 */
+                if (!"LEADER".equals(currentMember.getPosition())) {
+                        throw new IllegalArgumentException(
+                                        "LEADER만 프로젝트 멤버를 제외할 수 있습니다.");
+                }
+
+                /*
+                 * 제외 대상도 현재 프로젝트의 ACTIVE 멤버여야 한다.
+                 */
+                ProjectMember targetMember = projectMemberRepository
+                                .findByProjectIdAndUserIdAndMemberStatus(
+                                                projectId,
+                                                targetUserId,
+                                                "ACTIVE")
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                                "제외할 수 있는 ACTIVE 멤버가 아닙니다."));
+
+                /*
+                 * LEADER는 이 기능으로 제외하지 않는다.
+                 *
+                 * LEADER는 반드시 다른 멤버에게 리더를 양도한 뒤
+                 * leaveProject()를 통해 나가야 한다.
+                 */
+                if ("LEADER".equals(targetMember.getPosition())) {
+                        throw new IllegalArgumentException(
+                                        "LEADER는 강제 제외할 수 없습니다.");
+                }
+
+                /*
+                 * 강제 제외되면 관리 역할을 제거하기 위해
+                 * position을 MEMBER로 정리하고,
+                 * 참여 상태를 LEFT로 변경한다.
+                 */
+                targetMember.setPosition("MEMBER");
+                targetMember.setMemberStatus("LEFT");
+
+                return projectMemberRepository.save(targetMember);
         }
 }

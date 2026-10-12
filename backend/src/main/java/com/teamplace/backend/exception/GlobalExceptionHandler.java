@@ -67,4 +67,44 @@ public class GlobalExceptionHandler {
                 .status(HttpStatus.BAD_REQUEST)
                 .body(response);
     }
+
+    /*
+     * 대단원 삭제가 남아 있는 소단원 때문에 차단되면
+     * HTTP 409 Conflict를 반환한다.
+     *
+     * 기존 IllegalArgumentException의 HTTP 400과 구분한다.
+     *
+     * 응답 데이터:
+     * - status: 409
+     * - message: 삭제할 수 없는 이유
+     * - remainingTasks: 먼저 삭제해야 할 소단원 목록
+     *
+     * React에서는 remainingTasks를 이용해
+     * 소단원 ID와 제목을 안내창에 표시할 수 있다.
+     */
+    @ExceptionHandler(TaskDeletionBlockedException.class)
+    public ResponseEntity<Map<String, Object>> handleTaskDeletionBlocked(
+            TaskDeletionBlockedException e) {
+
+        /*
+         * 기존 HTTP 400 오류 응답과 동일하게
+         * Map을 이용하여 JSON 응답을 만든다.
+         */
+        Map<String, Object> response = new HashMap<>();
+
+        response.put("status", HttpStatus.CONFLICT.value());
+        response.put("message", e.getMessage());
+        response.put("remainingTasks", e.getRemainingTasks());
+
+        /*
+         * HTTP 409 상태와 JSON 본문을 함께 반환한다.
+         *
+         * Spring이 RemainingTask record를
+         * taskId, taskTitle 필드가 있는 JSON으로 변환한다.
+         */
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(response);
+    }
+
 }
