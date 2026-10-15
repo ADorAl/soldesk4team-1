@@ -343,7 +343,7 @@ function ProjectSettingsForm({
                 </h2>
 
                 <p className="mt-2 text-sm text-slate-500">
-                    프로젝트명, 설명, 자료 수집 키워드를 관리합니다.
+                    프로젝트명과 설명을 관리합니다.
                 </p>
             </header>
 
@@ -466,58 +466,13 @@ function ProjectSettingsForm({
                     />
                 </div>
 
-                {/* ==================================================
-            자료 수집 키워드
-
-            해당 값은 PROJECT.crawl_keyword와 연결된다.
-            실제 크롤링 실행 기능과는 별개다.
-           ================================================== */}
-                <div>
-                    <label
-                        htmlFor="project-settings-keyword"
-                        className="mb-2 block text-sm font-semibold text-slate-700"
-                    >
-                        자료 수집 키워드
-                    </label>
-
-                    <input
-                        id="project-settings-keyword"
-                        type="text"
-                        maxLength={500}
-                        disabled={!canEditProject || saving}
-                        value={crawlKeyword}
-
-
-                        onChange={(event) => {
-                            /*
-                             * [자료 수집 키워드 입력]
-                             *
-                             * 키워드 입력값을 crawlKeyword 상태에 저장한다.
-                             * 다른 입력 항목의 상태에는 영향을 주지 않는다.
-                             */
-                            setCrawlKeyword(event.target.value)
-
-                            // 새로운 편집을 시작하면 이전 결과 메시지 초기화
-                            setValidationError('')
-                            setSaveError('')
-                            setSaveSuccess('')
-                        }}
-
-
-                        placeholder="예: React, Spring Boot"
-                        className="
-              w-full rounded-lg border border-slate-300
-              bg-white px-4 py-3 text-sm text-slate-800
-              outline-none focus:border-blue-500
-              focus:ring-2 focus:ring-blue-100
-              disabled:cursor-not-allowed disabled:bg-slate-100
-            "
-                    />
-
-                    <p className="mt-2 text-xs text-slate-500">
-                        {crawlKeyword.length} / 500자
-                    </p>
-                </div>
+                {/*
+                 * [2026-10-16 UI 변경]
+                 * 키워드 입력창은 별도 자료 수집 페이지로 이전 예정이므로 표시하지 않는다.
+                 * 기존 crawlKeyword 상태, 변경 감지, PUT 요청 전달 코드는 유지하여
+                 * 프로젝트명/설명을 변경할 때 DB에 저장된 키워드가 지워지지 않게 한다.
+                 * 복구용 JSX는 frontend/KEYWORD_UI_RESTORE_NOTES.md 참고.
+                 */}
 
 
                 {/* ============================================================

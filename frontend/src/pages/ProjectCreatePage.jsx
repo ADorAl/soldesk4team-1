@@ -11,7 +11,7 @@
  * [현재 구현 기능]
  * 1. 프로젝트명 입력 및 필수값 검증
  * 2. 프로젝트 설명 입력
- * 3. 자료 수집 키워드 입력
+ * 3. 자료 수집 키워드 상태/API 호환성 유지 (입력 UI 숨김)
  * 4. POST /api/projects API 호출
  * 5. 제출 중 중복 클릭 방지
  * 6. 생성 성공 / 실패 처리
@@ -282,58 +282,13 @@ function ProjectCreatePage({ onCancel, onCreated }) {
                     {/* 구역 구분선 */}
                     <hr className="my-8 border-slate-200" />
 
-                    {/* ==================================================
-              3. 추가 설정
-
-              crawlKeyword는 PROJECT 테이블의 컬럼이다.
-              별도 PROJECT_KEYWORD 테이블은 사용하지 않는다.
-             ================================================== */}
-                    <section className="space-y-6">
-
-                        <div>
-                            <h2 className="text-xl font-bold text-slate-800">
-                                2. 추가 설정
-                            </h2>
-
-                            <p className="mt-1 text-sm text-slate-500">
-                                프로젝트 관련 자료를 수집할 키워드를 설정합니다.
-                            </p>
-                        </div>
-
-                        <div>
-                            <label
-                                htmlFor="crawlKeyword"
-                                className="mb-2 block text-sm font-semibold text-slate-700"
-                            >
-                                자료 수집 키워드
-                                <span className="ml-2 font-normal text-slate-400">
-                                    선택
-                                </span>
-                            </label>
-
-                            <input
-                                id="crawlKeyword"
-                                type="text"
-                                value={crawlKeyword}
-                                onChange={(event) => setCrawlKeyword(event.target.value)}
-                                maxLength={500}
-                                disabled={isSubmitting}
-                                placeholder="예: Spring Boot, React"
-                                className="
-                  w-full rounded-lg border border-slate-300
-                  bg-white px-4 py-3 text-sm text-slate-800
-                  outline-none transition-colors
-                  focus:border-blue-500 focus:ring-2 focus:ring-blue-100
-                  disabled:bg-slate-100
-                "
-                            />
-
-                            <p className="mt-2 text-xs text-slate-500">
-                                최대 500자 ({crawlKeyword.length}/500)
-                            </p>
-                        </div>
-
-                    </section>
+                    {/*
+                     * [2026-10-16 UI 변경]
+                     * 자료 수집 키워드는 별도 페이지에서 관리하기로 협의하여
+                     * 기존 '2. 추가 설정' 입력 섹션을 화면에서만 제외했다.
+                     * 기존 crawlKeyword 상태 및 생성 API 전달 구조는 그대로 유지한다.
+                     * 복구용 JSX는 frontend/KEYWORD_UI_RESTORE_NOTES.md 참고.
+                     */}
 
                     {/* ==================================================
               4. 생성 시 안내

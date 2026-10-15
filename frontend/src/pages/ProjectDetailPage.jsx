@@ -994,14 +994,7 @@ function ProjectDetailPage({ projectId, onBack }) {
                                         </dd>
                                     </div>
 
-                                    <div>
-                                        <dt className="mb-2 text-sm font-semibold text-slate-500">
-                                            자료 수집 키워드
-                                        </dt>
-                                        <dd className="text-slate-800">
-                                            {project.crawlKeyword || '미설정'}
-                                        </dd>
-                                    </div>
+                                    {/* [2026-10-16] 키워드는 자료 수집 페이지에서 표시할 예정이므로 개요에서 숨김. 복구 코드는 KEYWORD_UI_RESTORE_NOTES.md 참고. */}
 
                                     <div>
                                         <dt className="mb-2 text-sm font-semibold text-slate-500">

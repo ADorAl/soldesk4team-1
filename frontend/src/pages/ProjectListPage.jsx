@@ -435,10 +435,7 @@ function ProjectListPage({ onCreate, onSelectProject }) {
                                         {' '}{project.ownerId}
                                     </p>
 
-                                    <p className="text-slate-600">
-                                        <span className="font-semibold">수집 키워드:</span>
-                                        {' '}{project.crawlKeyword || '미설정'}
-                                    </p>
+                                    {/* [2026-10-16] 목록 카드의 키워드 표시를 숨김. 복구 코드는 KEYWORD_UI_RESTORE_NOTES.md 참고. */}
 
                                 </div>
 
