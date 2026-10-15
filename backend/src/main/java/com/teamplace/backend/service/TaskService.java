@@ -186,36 +186,25 @@ public class TaskService {
                 }
 
                 /*
-                 * 7. 담당자 검증
+                 * 7. 생성자를 업무 담당자로 자동 지정
                  *
-                 * assigneeId가 null이면 미배정으로 허용한다.
+                 * 대단원과 소단원 모두 동일한 생성 규칙을 사용한다.
                  *
-                 * 값이 있으면 해당 프로젝트의
-                 * ACTIVE 멤버인지 확인한다.
+                 * - 업무 생성은 프로젝트 ACTIVE 멤버만 가능하다(4번 검사 완료).
+                 * - 생성 요청 JSON에서 담당자를 받거나 선택하지 않는다.
+                 * - 현재 로그인한 사용자가 곧 최초 업무 담당자다.
+                 * - 이후 담당자 내려놓기 및 재배정은 별도의 API에서 권한 검사한다.
                  *
-                 * assigneeId는 담당자 정보이지,
-                 * 업무 조회 권한을 나타내지 않는다.
+                 * PROJECT_TASK.assignee_id 기존 컬럼만 사용하므로
+                 * DB 테이블이나 컬럼을 변경할 필요가 없다.
                  */
-                Long assigneeId = request.getAssigneeId();
-
-                if (assigneeId != null) {
-
-                        boolean isActiveAssignee = projectMemberRepository
-                                        .existsByProjectIdAndUserIdAndMemberStatus(
-                                                        projectId,
-                                                        assigneeId,
-                                                        "ACTIVE");
-
-                        if (!isActiveAssignee) {
-                                throw new IllegalArgumentException(
-                                                "담당자는 해당 프로젝트의 ACTIVE 멤버여야 합니다.");
-                        }
-                }
+                Long assigneeId = currentUserId;
 
                 /*
                  * 8. DB에 저장할 Entity 생성
                  *
-                 * 요청 DTO에서 허용한 값만 옮긴다.
+                 * 제목·내용·상위 업무 ID는 요청 DTO에서 가져오고,
+                 * 담당자는 현재 사용자 ID로 서버에서 확정한다.
                  *
                  * taskId는 Oracle 시퀀스가 생성한다.
                  * 상태와 진행률은 최초 기본값을 설정한다.
@@ -424,15 +413,14 @@ public class TaskService {
          * - TASK_CONTENT
          * - UPDATED_AT
          *
-         * 수정 권한:
-         * - ACTIVE LEADER: 모든 업무
-         * - ACTIVE VICE_LEADER: 모든 업무
-         * - ACTIVE MEMBER: 본인 담당 업무만
+         * 수정 권한(제목과 내용만 해당):
+         * - 대단원(parentTaskId == null): ACTIVE LEADER / VICE_LEADER만 허용
+         * - 소단원(parentTaskId != null): ACTIVE 멤버 전원 허용
          *
-         * assigneeId는 업무 담당자를 의미하며,
-         * 업무 생성자를 의미하지 않는다.
-         *
-         * 담당자 변경은 별도의 API에서 처리한다.
+         * 수정 권한은 현재 담당자(assigneeId)와 무관하다.
+         * 프로젝트의 ACTIVE 멤버 여부는 위에서 먼저 확인한다.
+         * 담당자 변경은 별도의 PATCH API에서 처리하며,
+         * 이번 수정 단계에서는 담당자 변경·삭제 권한에 손대지 않는다.
          */
         @Transactional
         public ProjectTask updateTask(
@@ -495,8 +483,9 @@ public class TaskService {
                  * 담당자 변경이나 claim 요청과 충돌할 경우
                  * 잠금이 해제될 때까지 기다릴 수 있다.
                  *
-                 * 잠금을 획득한 이후의 담당자 정보를 기준으로
-                 * 업무 수정 권한을 검사한다.
+                 * 잠금을 획득한 이후 현재 업무의 상하위 구분을 기준으로
+                 * 제목·내용 수정 권한을 검사한다.
+                 * (담당자 정보와는 무관하다.)
                  *
                  * @Transactional 범위에서 잠금이 유지되고,
                  * 트랜잭션이 종료되면 잠금이 해제된다.
@@ -517,23 +506,25 @@ public class TaskService {
                 }
 
                 /*
-                 * 7. 업무 수정 권한 판단
+                 * 7. 대단원·소단원별 제목/내용 수정 권한 판단
                  *
-                 * LEADER, VICE_LEADER는 모든 업무 수정 가능.
+                 * 대단원: PARENT_TASK_ID가 NULL인 업무.
+                 * 프로젝트 ACTIVE LEADER 또는 VICE_LEADER만 수정한다.
+                 * 소단원: PARENT_TASK_ID가 존재하는 업무.
+                 * 프로젝트 ACTIVE 멤버라면 직급·담당자와 관계없이 수정한다.
                  *
-                 * 일반 MEMBER는 현재 업무의 담당자가
-                 * 자기 자신일 때만 수정할 수 있다.
+                 * ACTIVE 여부는 4단계에서 이미 검사했으므로,
+                 * 여기서는 대단원에 대해서만 추가 직급 검사를 수행한다.
+                 * 업무 담당자 변경과 업무 삭제 권한은 이 메서드에 영향을 받지 않는다.
                  */
+                boolean isParentTask = task.getParentTaskId() == null;
                 String position = member.getPosition();
-
                 boolean isManager = "LEADER".equals(position)
                                 || "VICE_LEADER".equals(position);
 
-                boolean isAssignee = currentUserId.equals(task.getAssigneeId());
-
-                if (!isManager && !isAssignee) {
+                if (isParentTask && !isManager) {
                         throw new IllegalArgumentException(
-                                        "본인이 담당한 업무만 수정할 수 있습니다.");
+                                        "대단원 업무는 LEADER 또는 VICE_LEADER만 수정할 수 있습니다.");
                 }
 
                 /*
@@ -595,21 +586,27 @@ public class TaskService {
         }
 
         /*
-         * 업무 담당자를 변경하거나 미배정(NULL)으로 변경한다.
+         * 업무 담당자 변경 / 내려놓기 / 미배정 업무 배정.
          *
          * PATCH /api/projects/{projectId}/tasks/{taskId}/assignee
          *
-         * 담당자 변경 권한:
-         * - ACTIVE LEADER: 모든 업무
-         * - ACTIVE VICE_LEADER: 모든 업무
-         * - ACTIVE MEMBER: 본인이 현재 담당한 업무만
+         * [현재 요청자 역할을 기준으로 한 정책]
+         * - ACTIVE MEMBER: 본인 담당 업무를 미배정(NULL)으로 내려놓기만 가능.
+         * - ACTIVE VICE_LEADER: 현재 담당자가 LEADER가 아닌 업무의 담당자를
+         * VICE_LEADER 또는 MEMBER에게 변경하거나 NULL로 해제 가능.
+         * - ACTIVE LEADER: 모든 업무를 VICE_LEADER 또는 MEMBER에게
+         * 변경하거나 NULL로 해제 가능.
          *
-         * 새로운 담당자는 같은 프로젝트의 ACTIVE 멤버여야 한다.
+         * [미배정 업무]
+         * - LEADER / VICE_LEADER는 위 대상 범위에서 다른 사람을 배정할 수 있다.
+         * - 본인이 미배정 업무를 가져오는 것은 모든 ACTIVE 멤버가
+         * POST .../claim API로 처리한다.
          *
-         * assigneeId가 NULL이면 업무를 미배정 상태로 변경한다.
-         *
-         * 미배정 업무를 일반 MEMBER가 스스로 가져오는 기능은
-         * 별도의 claim API에서 처리한다.
+         * [보안과 데이터]
+         * - 현재 담당자 / 새 담당자의 직급은 PROJECT_MEMBER에서 확인한다.
+         * - PENDING / REJECTED / LEFT는 배정 대상이 될 수 없다.
+         * - 프로젝트 DELETED 여부와 행 잠금을 기존대로 검사한다.
+         * - 기존 PROJECT_TASK.assignee_id만 수정하며 DDL은 변경하지 않는다.
          */
         @Transactional
         public ProjectTask updateTaskAssignee(
@@ -687,50 +684,62 @@ public class TaskService {
                 }
 
                 /*
-                 * 6. 담당자 변경 권한 확인.
+                 * 6. 요청자 직급 확인 및 기존 담당자의 직급 조회.
                  *
-                 * LEADER / VICE_LEADER는 모든 업무의 담당자를 변경할 수 있다.
-                 *
-                 * 일반 MEMBER는 현재 업무 담당자가
-                 * 자기 자신일 때만 담당자를 변경할 수 있다.
-                 *
-                 * 담당자가 NULL인 업무를 일반 MEMBER가 가져오려면
-                 * 별도의 claim API를 사용해야 한다.
+                 * 담당자가 없는 업무는 현재 담당자의 직급 검사 대상이 아니다.
+                 * 현재 담당자가 LEFT 등 비활성 상태가 되더라도 기록된 담당자의
+                 * 마지막 POSITION을 조회하여 상위 직급의 업무를 보호한다.
                  */
                 String position = member.getPosition();
+                boolean isLeader = "LEADER".equals(position);
+                boolean isViceLeader = "VICE_LEADER".equals(position);
+                Long oldAssigneeId = task.getAssigneeId();
+                boolean isCurrentAssignee = currentUserId.equals(oldAssigneeId);
 
-                boolean isManager = "LEADER".equals(position)
-                                || "VICE_LEADER".equals(position);
+                if (oldAssigneeId != null && !isLeader && isViceLeader) {
+                        ProjectMember oldAssigneeMember = projectMemberRepository
+                                        .findByProjectIdAndUserId(projectId, oldAssigneeId)
+                                        .orElseThrow(() -> new IllegalArgumentException(
+                                                        "현재 담당자의 프로젝트 멤버 정보를 찾을 수 없습니다."));
 
-                boolean isCurrentAssignee = currentUserId.equals(task.getAssigneeId());
-
-                if (!isManager && !isCurrentAssignee) {
-                        throw new IllegalArgumentException(
-                                        "본인이 담당한 업무만 담당자를 변경할 수 있습니다.");
+                        if ("LEADER".equals(oldAssigneeMember.getPosition())) {
+                                throw new IllegalArgumentException(
+                                                "VICE_LEADER는 LEADER 담당 업무를 변경할 수 없습니다.");
+                        }
                 }
 
                 /*
-                 * 7. 새로운 담당자 확인.
-                 *
-                 * assigneeId가 NULL이면 미배정으로 변경하므로
-                 * 새 담당자의 ACTIVE 여부 검증은 생략한다.
-                 *
-                 * 값이 있다면 반드시 같은 프로젝트의
-                 * ACTIVE 멤버여야 한다.
+                 * MEMBER는 자기 업무를 내려놓는 것만 허용한다.
+                 * 다른 사람에게 넘기거나 남의 업무를 변경하는 것은 금지한다.
+                 * 미배정 업무를 가져오려면 claim API를 사용해야 한다.
                  */
                 Long newAssigneeId = request.getAssigneeId();
-
-                if (newAssigneeId != null) {
-
-                        boolean isActiveAssignee = projectMemberRepository
-                                        .existsByProjectIdAndUserIdAndMemberStatus(
-                                                        projectId,
-                                                        newAssigneeId,
-                                                        "ACTIVE");
-
-                        if (!isActiveAssignee) {
+                if (!isLeader && !isViceLeader) {
+                        if (!isCurrentAssignee || newAssigneeId != null) {
                                 throw new IllegalArgumentException(
-                                                "새 담당자는 해당 프로젝트의 ACTIVE 멤버여야 합니다.");
+                                                "MEMBER는 본인 담당 업무를 내려놓기만 할 수 있습니다.");
+                        }
+                }
+
+                /*
+                 * 7. 새 담당자 검사.
+                 *
+                 * NULL이면 담당 해제이므로 대상 사용자는 조회하지 않는다.
+                 * 숫자 ID가 오면 같은 프로젝트 ACTIVE 멤버인지 확인하고,
+                 * LEADER는 배정 대상으로 지정하지 못하도록 한다.
+                 * VICE_LEADER는 다른 VICE_LEADER나 MEMBER에게 배정 가능하다.
+                 * LEADER도 VICE_LEADER나 MEMBER에게 배정 가능하다.
+                 */
+                if (newAssigneeId != null) {
+                        ProjectMember newAssigneeMember = projectMemberRepository
+                                        .findByProjectIdAndUserIdAndMemberStatus(
+                                                        projectId, newAssigneeId, "ACTIVE")
+                                        .orElseThrow(() -> new IllegalArgumentException(
+                                                        "새 담당자는 해당 프로젝트의 ACTIVE 멤버여야 합니다."));
+
+                        if ("LEADER".equals(newAssigneeMember.getPosition())) {
+                                throw new IllegalArgumentException(
+                                                "LEADER에게는 담당 업무를 배정할 수 없습니다.");
                         }
                 }
 
@@ -753,8 +762,8 @@ public class TaskService {
                  * TASK_TITLE, TASK_CONTENT, PARENT_TASK_ID,
                  * TASK_STATUS, PROGRESS는 변경하지 않는다.
                  *
-                 * MEMBER가 자신에서 다른 사용자 또는 NULL로
-                 * 변경하면 이후 기존 담당자의 수정 권한은 사라진다.
+                 * 담당자 변경은 제목/내용 수정 권한과 별개의 기능이다.
+                 * 대단원/소단원 수정 권한 판단은 updateTask()에서 수행한다.
                  */
                 task.setAssigneeId(newAssigneeId);
 

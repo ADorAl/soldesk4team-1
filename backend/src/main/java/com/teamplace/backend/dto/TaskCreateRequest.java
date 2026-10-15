@@ -16,7 +16,6 @@ import lombok.Setter;
  * {
  *   "taskTitle": "로그인 API 구현",
  *   "taskContent": "Spring Boot 로그인 기능 개발",
- *   "assigneeId": 2,
  *   "parentTaskId": 10
  * }
  *
@@ -67,16 +66,11 @@ public class TaskCreateRequest {
     private String taskContent;
 
     /*
-     * 업무를 담당할 사용자 ID.
-     *
-     * PROJECT_TASK.assignee_id에 저장된다.
-     *
-     * NULL이면 담당자가 지정되지 않은 상태다.
-     *
-     * Service에서 해당 사용자가 프로젝트의
-     * ACTIVE 멤버인지 검증해야 한다.
+     * 담당자 ID는 생성 요청에서 받지 않는다.
+     * TaskService가 현재 로그인 사용자를 최초 담당자로 자동 지정한다.
+     * 담당자를 내려놓거나 재배정하는 기능은 생성 후 별도 API로 처리한다.
+     * 따라서 이 DTO에는 assigneeId 필드가 없다.
      */
-    private Long assigneeId;
 
     /*
      * 상위 업무의 taskId.
