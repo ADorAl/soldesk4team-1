@@ -112,6 +112,9 @@ import ProjectMemberList from '../components/ProjectMemberList'
  */
 import ProjectInviteForm from '../components/ProjectInviteForm'
 
+// [4-2단계] 기존 업무 관리 탭에서 조회 전용 대단원·소단원 목록 표시
+import ProjectTaskList from '../components/ProjectTaskList'
+
 
 // ------------------------------------------------------------
 // 날짜 표시용 함수
@@ -1022,15 +1025,21 @@ function ProjectDetailPage({ projectId, onBack }) {
                             </section>
                         )}
 
-                        {/* 업무 관리: 추후 PROJECT_TASK 연결 */}
+                        {/*
+                          [4-2단계: TASK 목록 조회 연결]
+                          프로젝트 상세 탭 구조는 유지하고 목록 컴포넌트만 삽입한다.
+                          projectId: 현재 선택한 프로젝트
+                          members: 기존에 조회한 ACTIVE 멤버 데이터(담당자 이름 표시용)
+                          membersLoading: 멤버 데이터 로딩 안내에 사용
+                          실제 업무 접근 권한은 TaskService에서 검증한다.
+                          TASK의 생성·수정·삭제·담당자 변경은 후속 단계에서 연결한다.
+                        */}
                         {activeTab === 'tasks' && (
-                            <section className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
-                                <h2 className="text-xl font-bold">업무 관리</h2>
-                                <p className="mt-3 text-sm text-slate-500">
-                                    대단원/소단원 목록, 생성, 수정, 삭제 및
-                                    담당자 관리 기능을 연결할 예정입니다.
-                                </p>
-                            </section>
+                            <ProjectTaskList
+                                projectId={projectId}
+                                members={members}
+                                membersLoading={membersLoading}
+                            />
                         )}
 
                         {/*
