@@ -1,0 +1,40 @@
+프로그램 실행 및 기본 구성
+파일	존재 이유
+main.jsx	React 애플리케이션을 실행하고 최상위 컴포넌트를 연결.
+App.jsx	전체 페이지 라우팅과 공통 화면 구조를 관리.
+index.html	React 애플리케이션이 표시되는 기본 HTML 문서.
+vite.config.js	Vite 개발 서버와 Spring Boot API 프록시 등을 설정.
+package.json	React 프로젝트의 라이브러리와 실행 명령을 관리.
+package-lock.json	설치한 npm 라이브러리의 정확한 버전을 고정.
+eslint.config.js	JavaScript와 React 코드의 문법 및 품질 검사 규칙을 설정.
+README.md	프로젝트 실행과 사용 방법 등을 문서화.
+Pages — 실제 페이지 화면
+파일	존재 이유
+ProjectListPage.jsx	사용자가 참여하는 프로젝트 목록을 보여주는 화면.
+ProjectCreatePage.jsx	새로운 프로젝트를 생성하는 입력 화면.
+ProjectDetailPage.jsx	선택한 프로젝트의 정보와 업무·멤버·설정 탭을 관리하는 화면.
+Components — 페이지 안에서 사용하는 기능별 부품
+파일	존재 이유
+Sidebar.jsx	여러 페이지에서 공통으로 사용하는 사이드바 메뉴를 표시.
+ProjectSettingsForm.jsx	프로젝트 이름 등 기존 프로젝트 정보를 수정하는 입력 폼.
+ProjectDeleteSection.jsx	프로젝트 삭제 기능과 사용자 확인 화면을 제공.
+ProjectInvitationList.jsx	사용자에게 도착한 프로젝트 초대와 수락·거절 기능을 표시.
+ProjectInviteForm.jsx	프로젝트에 다른 사용자를 초대하는 입력 폼.
+ProjectMemberList.jsx	프로젝트 참여자 목록과 멤버 관리 기능을 표시.
+ProjectRoleInfo.jsx	프로젝트 참여자의 역할 및 권한 정보를 안내.
+ProjectTaskCreateForm.jsx	프로젝트의 대단원·소단원 업무를 생성하는 입력 폼.
+ProjectTaskList.jsx	프로젝트에 등록된 대단원·소단원 업무 목록을 표시.
+ProjectTaskDetail.jsx	선택한 업무의 상세 조회·수정·담당자 변경·삭제 기능을 제공.
+Services — 백엔드와 통신
+파일	존재 이유
+projectApi.js	프로젝트 CRUD, 멤버 초대, 수락·거절, 역할 변경 등 프로젝트 API 요청을 관리.
+taskApi.js	업무 CRUD, 상세 조회, 담당자 변경 등 TASK API 요청을 관리.
+Config — 개발용 설정
+파일	존재 이유
+devUser.js	개발 중 사용할 사용자 ID와 X-Dev-User-Id 요청 헤더를 관리.
+CSS — 화면 디자인
+파일	존재 이유
+index.css	Tailwind CSS와 애플리케이션의 전역 스타일을 적용.
+App.css	애플리케이션 화면에 적용할 별도 CSS 스타일을 보관.
+Assets — 이미지 및 아이콘
+

@@ -329,7 +329,7 @@ export async function getProjectDetail(projectId) {
             method: 'GET',
             headers: {
                 Accept: 'application/json',
-            ...getDevUserHeaders(),
+                ...getDevUserHeaders(),
             },
         }
     )
@@ -508,7 +508,7 @@ export async function updateProject(projectId, projectData) {
             headers: {
                 'Content-Type': 'application/json',
                 Accept: 'application/json',
-            ...getDevUserHeaders(),
+                ...getDevUserHeaders(),
             },
 
             body: JSON.stringify(requestBody),
@@ -663,7 +663,7 @@ export async function getProjectMembers(projectId) {
 
             headers: {
                 Accept: 'application/json',
-            ...getDevUserHeaders(),
+                ...getDevUserHeaders(),
             },
         }
     )
@@ -799,7 +799,7 @@ export async function deleteProject(projectId) {
 
             headers: {
                 Accept: 'application/json',
-            ...getDevUserHeaders(),
+                ...getDevUserHeaders(),
             },
         }
     )

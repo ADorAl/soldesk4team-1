@@ -34,7 +34,7 @@ public class CurrentUserService {
     /*
      * 헤더가 없거나 dev 프로필이 아닐 때 사용하는 기본 사용자.
      */
-    private static final Long DEVELOPMENT_USER_ID = 1L;
+    private static final Long DEVELOPMENT_USER_ID = 2L;
 
     /*
      * 개발 테스트에서만 사용하는 HTTP 헤더 이름.
